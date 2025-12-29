@@ -26,7 +26,7 @@ This project is built using CMake and includes WFA2-lib as a submodule.
 ⚠️ Important: This project depends on the WFA2-lib submodule, which must be cloned together with the main repository.
 
 ```bash
-git clone --recursive https://github.com/yourname/halign4_viral.git
+git clone --recursive https://github.com/malabz/HAlign-4.git
 ```
 
 After cloning, make sure the following directory exists:
@@ -89,5 +89,6 @@ Example usage:
 This project makes use of WFA2 (Wavefront Alignment Algorithm):
 
 > Marco-Sola, S., et al. *Fast gap-affine pairwise alignment using the wavefront algorithm*. Bioinformatics.
+
 
 
