@@ -13,7 +13,7 @@ namespace utils
         void _read(std::istream &is);
 
     public:
-        static constexpr unsigned max_line_length = 80; 
+        static constexpr unsigned max_line_length = 80;
 
         std::vector<std::string> sequences;
         std::vector<std::string> identifications;
@@ -40,8 +40,8 @@ namespace utils
         }
 
         template<typename InputIterator1, typename InputIterator2>
-        static void write_to(std::ostream &os, InputIterator1 sequence_first, InputIterator1 sequence_last, 
-                InputIterator2 identification_first)
+        static void write_to(std::ostream &os, InputIterator1 sequence_first, InputIterator1 sequence_last,
+                             InputIterator2 identification_first)
         {
             if (sequence_first == sequence_last) return;
 

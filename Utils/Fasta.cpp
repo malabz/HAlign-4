@@ -39,7 +39,7 @@ void utils::Fasta::_read(std::istream &is)
     sequences.emplace_back(each_sequence);
 }
 
-void utils::Fasta::cut_and_write(std::ostream &os, const std::string &sequence) 
+void utils::Fasta::cut_and_write(std::ostream &os, const std::string &sequence)
 {
     const size_t sequence_length = sequence.size();
 

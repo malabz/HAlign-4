@@ -24,13 +24,24 @@ void getFiles_win(std::string path, std::vector<std::string>& files);
 #elif defined(__unix__) || defined(__unix) || defined(unix) || (defined(__APPLE__) && defined(__MACH__))
 #include <sys/types.h>
 #include <dirent.h>
+#if defined(__linux__)
 #include <malloc.h>
+#elif defined(__APPLE__)
+#include <stdlib.h>
+#include <malloc/malloc.h>
+#else
+#include <stdlib.h>
+#endif
+
 #include <unistd.h>
 #include <sys/resource.h>
 #include <pthread.h>
 inline void EmptySet()
 {
+#if defined(__linux__)
+    #include <malloc.h>
     malloc_trim(0);
+#endif
 }
 void getFiles_linux(std::string path, std::vector<std::string>& filenames);
 #if defined(__APPLE__) && defined(__MACH__)
@@ -59,13 +70,13 @@ inline void GetMemoryUsage()
 }
 
 namespace utils
-{ 
+{
     struct MAF_info
     {
         std::string path;
         int thresh1;
-        int thresh2; 
-        int thresh3; 
+        int thresh2;
+        int thresh3;
     };
     struct block
     {
@@ -111,18 +122,18 @@ namespace utils
     struct MAF_block
     {
         float score;
-        int tag_num; 
+        int tag_num;
         std::vector<block> seq;
     };
     std::string remove_white_spaces(const std::string &str);
 
-    unsigned char to_pseudo(char c); 
+    unsigned char to_pseudo(char c);
 
     std::vector<unsigned char> to_pseudo(const std::string &str);
     std::string from_pseudo(const std::vector<unsigned char> &pseu);
 
     template<typename InputIterator, typename OutputIterator>
-    void transform_to_pseudo(InputIterator src_first, InputIterator src_last, OutputIterator des) 
+    void transform_to_pseudo(InputIterator src_first, InputIterator src_last, OutputIterator des)
     {
         std::vector<unsigned char> (*op)(const std::string &) = &to_pseudo;
         std::transform(src_first, src_last, des, op);
@@ -136,7 +147,7 @@ namespace utils
     }
 
     template<typename InputIterator>
-    InputIterator iter_of_max(InputIterator first, InputIterator last) 
+    InputIterator iter_of_max(InputIterator first, InputIterator last)
     {
         auto result = first;
 
@@ -145,6 +156,13 @@ namespace utils
     }
 
     std::vector<std::vector<unsigned char>> read_to_pseudo(std::istream& is, std::string& center_name, int& II, int& center_);
+
+    // add for viral msa --- star---
+    std::vector<std::vector<unsigned char>> read_to_pseudo_for_viral(std::istream& is);
+    void read_single_fasta_sequence(std::istream& in, std::string& id, std::vector<unsigned char>& sequence);
+    void write_to_fasta_for_vrial_msa(std::ostream& os, std::istream& is, std::vector<std::vector<unsigned char>>& aligned_sequneces);
+    bool read_batch_of_n_sequences_with_ids(std::istream& in,std::vector<std::pair<std::string, std::vector<unsigned char>>>& batch,size_t N);    // add for viral msa --- end---
+
     unsigned char* copy_DNA(const std::vector<unsigned char>& sequence, unsigned char* A, size_t a_begin, size_t a_end);
     void insert_and_write(std::ostream &os, std::istream &is, const std::vector<std::vector<Insertion>> &insertions); //ԭ�ļ�д�رȶԽ��
     void write_to_fasta(std::ostream& os, std::istream& is, std::vector<std::vector<Insertion>>& insertions, size_t& II);

@@ -1,4 +1,4 @@
-# HAlign4
+# vHAlign4
 
 [HAlign4](https://academic.oup.com/bioinformatics/article/40/12/btae718/7912339?login=false) is a high-performance multiple sequence alignment software based on the star alignment strategy, designed for efficiently aligning large numbers of sequences. Compared to its predecessor HAlign3, HAlign4 further enhances the ability to handle long sequences and large-scale datasets, enabling fast and efficient alignment on standard computing devices.
 
@@ -62,7 +62,18 @@ This method allows you to manually compile HAlign4 using Make. For [here](https:
 ## Usage
 By following either of these methods, you can successfully install and run HAlign4. Choose the method that best fits your development environment.
 ```
-./halign4 Input_file Output_file [-r/--reference val] [-t/--threads val] [-sa/--sa val] [-h/--help]
+Usage:
+  ./vhalign4 <dataset_fasta> <reference_fasta> <output_prefix> [options]
+
+Positional arguments:
+  dataset_fasta        Input dataset FASTA file containing query sequences.
+  reference_fasta      Reference FASTA file (should contain exactly one sequence).
+  output_prefix        Prefix for output files (e.g., output_prefix.fasta / output_prefix.vcf).
+
+Optional arguments:
+  -t, --threads <int>  Number of threads to use (default: 1).
+  -s, --save-vcf       Enable VCF output generation.
+  -h, --help           Show this help message.
 ```
 
 ### Parameter Description

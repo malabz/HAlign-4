@@ -4,9 +4,9 @@
 
 
 utils::AdjacencyList::AdjacencyList(size_t nodes_number)
-    : nodes(nodes_number)
-    , _node_num(nodes_number)
-    // , _edge_num(0)
+        : nodes(nodes_number)
+        , _node_num(nodes_number)
+// , _edge_num(0)
 {}
 
 void utils::AdjacencyList::add_edge(size_t from, size_t to, unsigned weight)

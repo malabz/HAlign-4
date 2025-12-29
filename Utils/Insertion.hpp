@@ -2,19 +2,21 @@
 //����gap
 #include <cstddef>
 #include <iterator>
+#include <algorithm>
+
 
 namespace utils
 {
-    struct Insertion2   
-    {
-        size_t index; 
-        size_t n_num; 
-        size_t gap_num; 
-    };
-    struct Insertion   
+    struct Insertion2
     {
         size_t index;
-        size_t number; 
+        size_t n_num;
+        size_t gap_num;
+    };
+    struct Insertion
+    {
+        size_t index;
+        size_t number;
 
         bool operator==(const Insertion &rhs) const noexcept;
 
@@ -59,7 +61,7 @@ namespace utils
 
         template<typename InIt1, typename InIt2, typename OutIt>
         static void insert_gaps(InIt1 sequence_first, InIt1 sequence_last,
-                InIt2 insertion_first, InIt2 insertion_last, OutIt dest, typename std::iterator_traits<InIt1>::value_type gap_symbol)
+                                InIt2 insertion_first, InIt2 insertion_last, OutIt dest, typename std::iterator_traits<InIt1>::value_type gap_symbol)
         {
             for (unsigned last_index = 0; insertion_first != insertion_last; ++insertion_first)
             {

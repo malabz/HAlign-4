@@ -1,4 +1,4 @@
-﻿#include "Utils.hpp"
+#include "Utils.hpp"
 #include "Pseudo.hpp"
 #include "Fasta.hpp"
 #include "Arguments.hpp"
@@ -12,7 +12,7 @@
 #include <fstream>
 #include <cstring>
 #if defined(_WIN32)
-#include <io.h> 
+#include <io.h>
 #include <direct.h>
 #elif defined(__unix__) || defined(__unix) || defined(unix)
 #include <sys/stat.h>
@@ -29,7 +29,7 @@ int my_mk_dir(std::string output_dir)
     else
         return 0;
 #elif defined(__unix__) || defined(__unix) || defined(unix)
-    if (access(output_dir.c_str(), F_OK) == -1) 
+    if (access(output_dir.c_str(), F_OK) == -1)
     {
         return mkdir(output_dir.c_str(), S_IRWXU | S_IRUSR | S_IWUSR | S_IXUSR | S_IRWXG | S_IRWXO);
     }
@@ -44,13 +44,13 @@ void cout_cur_time()
 {
     auto now = std::chrono::system_clock::now();
     uint64_t dis_millseconds = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()
-        - std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count() * 1000;
+                               - std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count() * 1000;
     time_t tt = std::chrono::system_clock::to_time_t(now);
     auto time_tm = localtime(&tt);
     char strTime[25] = { 0 };
     sprintf(strTime, "%d-%02d-%02d %02d:%02d:%02d | ", time_tm->tm_year + 1900,
-        time_tm->tm_mon + 1, time_tm->tm_mday, time_tm->tm_hour,
-        time_tm->tm_min, time_tm->tm_sec);
+            time_tm->tm_mon + 1, time_tm->tm_mday, time_tm->tm_hour,
+            time_tm->tm_min, time_tm->tm_sec);
     std::cout << strTime;
 }
 
@@ -136,13 +136,13 @@ void getFiles_linux(std::string path, std::vector<std::string>& filenames)
 
 int NSCORE = 0;
 int HOXD70[6][6] = { {},{0,91,-114,-31,-123,NSCORE},{0,-114,100,-125,-31,NSCORE},{0,-31,-125,100,-114,NSCORE},
-    {0,-123,-31,-114,91,NSCORE},{0,NSCORE,NSCORE,NSCORE,NSCORE,NSCORE} };
+                     {0,-123,-31,-114,91,NSCORE},{0,NSCORE,NSCORE,NSCORE,NSCORE,NSCORE} };
 int cs[8] = { 0,91,100,100,91,0,0,0 };
-int d = 400, e = 30; 
+int d = 400, e = 30;
 int stop_g = 5;
 std::vector<unsigned char> ACGT = { nucleic_acid_pseudo::A ,nucleic_acid_pseudo::C ,nucleic_acid_pseudo::G ,nucleic_acid_pseudo::T };
 
-std::string utils::remove_white_spaces(const std::string& str) 
+std::string utils::remove_white_spaces(const std::string& str)
 {
     static const std::regex white_spaces("\\s+");
     return std::regex_replace(str, white_spaces, "");
@@ -157,7 +157,7 @@ std::vector<unsigned char> utils::to_pseudo(const std::string& str)
     {
         c = to_pseudo(str[i]);
         if (c != nucleic_acid_pseudo::N)
-            pseu.emplace_back(c); 
+            pseu.emplace_back(c);
         else
             pseu.emplace_back(ACGT[i % 4]);
     }
@@ -175,7 +175,7 @@ std::string utils::from_pseudo(const std::vector<unsigned char>& pseu)
     return str;
 }
 
-unsigned char* _get_map() 
+unsigned char* _get_map()
 {
     using namespace nucleic_acid_pseudo;
 
@@ -194,12 +194,12 @@ unsigned char* _get_map()
 
 static const unsigned char* _map = _get_map();
 
-unsigned char utils::to_pseudo(char ch)  
+unsigned char utils::to_pseudo(char ch)
 {
     return _map[ch];
 }
 
-std::vector<std::vector<unsigned char>> utils::read_to_pseudo(std::istream& is, std::string& center_name, int& II, int& center_) 
+std::vector<std::vector<unsigned char>> utils::read_to_pseudo(std::istream& is, std::string& center_name, int& II, int& center_)
 {
     std::vector<std::vector<unsigned char>> sequences;
 
@@ -207,7 +207,7 @@ std::vector<std::vector<unsigned char>> utils::read_to_pseudo(std::istream& is, 
     std::string each_sequence;
     for (bool flag = false; std::getline(is, each_line); )
     {
-        if (each_line.size() == 0 || (each_line.size() == 1 && (int)each_line[0] == 13)) 
+        if (each_line.size() == 0 || (each_line.size() == 1 && (int)each_line[0] == 13))
             continue;
 
         if (each_line[0] == '>')
@@ -217,7 +217,7 @@ std::vector<std::vector<unsigned char>> utils::read_to_pseudo(std::istream& is, 
                 each_line.pop_back();
             each_line.erase(std::remove_if(each_line.begin(), each_line.end(), [](char c) {
                 return (c == ' ' || c == '\t');
-                }), each_line.end());
+            }), each_line.end());
             if (center_ == -1 && each_line == center_name)
                 center_ = II;
             II++;
@@ -237,11 +237,258 @@ std::vector<std::vector<unsigned char>> utils::read_to_pseudo(std::istream& is, 
     }
 
     sequences.emplace_back(to_pseudo(each_sequence));
-    return sequences; 
+    return sequences;
 }
 
+// add for viral msa --- star---
+void utils::read_single_fasta_sequence(std::istream& in,
+                                       std::string& id,
+                                       std::vector<unsigned char>& sequence)
+{
+    std::string line, seq;
+    bool found_id = false;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        if (line[0] == '>') {
+            if (found_id) break;  // 只读取一条序列
+            id = line.substr(1);  // 去掉 '>'
+            found_id = true;
+        } else {
+            seq += line;
+        }
+    }
+    sequence.assign(seq.begin(), seq.end());
+}
+
+std::vector<std::vector<unsigned char>> utils::read_to_pseudo_for_viral(std::istream& is)
+{
+    std::vector<std::vector<unsigned char>> sequences;
+
+    std::string each_line;
+    std::string each_sequence;
+    bool flag = false;
+
+    while (std::getline(is, each_line))
+    {
+        // 跳过空行或只有回车
+        if (each_line.empty() || (each_line.size() == 1 && (int)each_line[0] == 13))
+            continue;
+
+        if (each_line[0] == '>')
+        {
+            // 如果前面已经读入过一条序列，则保存
+            if (flag && !each_sequence.empty())
+            {
+                std::vector<unsigned char> seq_uc;
+                seq_uc.reserve(each_sequence.size());
+                for (char ch : each_sequence)
+                    seq_uc.emplace_back(std::toupper(static_cast<unsigned char>(ch)));
+
+                sequences.emplace_back(std::move(seq_uc));
+                each_sequence.clear();
+            }
+            flag = true;  // 表示开始读取一条新的序列
+        }
+        else if (flag)
+        {
+            // 累积序列内容（去除行末回车）
+            if (!each_line.empty() && (int)(*each_line.rbegin()) == 13)
+                each_line.pop_back();
+            each_sequence += each_line;
+        }
+    }
+
+    // 处理最后一条序列
+    if (!each_sequence.empty())
+    {
+        std::vector<unsigned char> seq_uc;
+        seq_uc.reserve(each_sequence.size());
+        for (char ch : each_sequence)
+            seq_uc.emplace_back(std::toupper(static_cast<unsigned char>(ch)));
+
+        sequences.emplace_back(std::move(seq_uc));
+    }
+
+    return sequences;
+}
+
+void utils::write_to_fasta_for_vrial_msa(std::ostream& os, std::istream& is, std::vector<std::vector<unsigned char>>& aligned_sequences)
+{
+    std::string line;
+    std::vector<std::string> ids;
+
+    // 提取 ID（以 '>' 开头的行）
+    for (; std::getline(is, line); ) {
+        if (line.empty()) continue;
+        if (line[0] == '>') {
+            ids.push_back(line);
+        }
+    }
+
+    // 检查数量是否一致
+    if (ids.size() != aligned_sequences.size()) {
+        std::cerr << "ERROR: Number of IDs (" << ids.size()
+                  << ") does not match number of aligned sequences ("
+                  << aligned_sequences.size() << ").\n";
+        return;
+    }
+
+    // 输出每条序列，支持 60 字符换行
+    for (size_t i = 0; i < ids.size(); ++i) {
+        os << ids[i] << "\n";
+
+        const auto& seq = aligned_sequences[i];
+        size_t len = seq.size();
+        for (size_t pos = 0; pos < len; pos += 60) {
+            size_t chunk_size = std::min((size_t)60, len - pos);
+            for (size_t j = 0; j < chunk_size; ++j)
+                os << seq[pos + j];
+            os << "\n";
+        }
+    }
+}
+
+// bool utils::read_batch_of_n_sequences_with_ids(std::istream& in,
+//     std::vector<std::pair<std::string, std::vector<unsigned char>>>& batch,
+//     size_t N) {
+//
+//     batch.clear();
+//     std::string line, seq, current_id;
+//     while (std::getline(in, line)) {
+//         if (line.empty()) continue;
+//         if (line[0] == '>') {
+//             if (!seq.empty()) {
+//                 batch.emplace_back(current_id, std::vector<unsigned char>(seq.begin(), seq.end()));
+//                 seq.clear();
+//                 if (batch.size() >= N) return true;
+//             }
+//             current_id = line.substr(1);  // 去掉 >
+//         } else {
+//             seq += line;
+//         }
+//     }
+//     if (!seq.empty()) {
+//         batch.emplace_back(current_id, std::vector<unsigned char>(seq.begin(), seq.end()));
+//     }
+//     return !batch.empty();
+// }
+
+// bool utils::read_batch_of_n_sequences_with_ids(
+//     std::istream& in,
+//     std::vector<std::pair<std::string, std::vector<unsigned char>>>& batch,
+//     size_t N)
+// {
+//     batch.clear();
+//     std::string line, seq, current_id;
+
+//     while (std::getline(in, line)) {
+//         // 去除末尾可能的 '\r'
+//         if (!line.empty() && line.back() == '\r') {
+//             line.pop_back();
+//         }
+
+//         if (line.empty()) continue;
+
+//         if (line[0] == '>') {
+//             if (!seq.empty()) {
+//                 // 转为大写并存储
+//                 std::vector<unsigned char> seq_vec;
+//                 seq_vec.reserve(seq.size());
+//                 for (char c : seq) {
+//                     seq_vec.emplace_back(std::toupper(static_cast<unsigned char>(c)));
+//                 }
+
+//                 batch.emplace_back(current_id, std::move(seq_vec));
+//                 if (current_id.empty()) {
+//                     std::cerr << "[DEBUG] Empty current_id 1. \n";
+//                 }
+//                 seq.clear();
+
+//                 if (batch.size() >= N) return true;
+//             }
+//             current_id = line.substr(1);  // 去掉 '>'
+//         } else {
+//             seq += line;
+//         }
+//     }
+
+//     // 文件最后一条序列也别漏掉
+//     if (!seq.empty()) {
+//         std::vector<unsigned char> seq_vec;
+//         seq_vec.reserve(seq.size());
+//         for (char c : seq) {
+//             seq_vec.emplace_back(std::toupper(static_cast<unsigned char>(c)));
+//         }
+
+//         batch.emplace_back(current_id, std::move(seq_vec));
+//         if (current_id.empty()) {
+//                     std::cerr << "[DEBUG] Empty current_id 2. \n";
+//         }
+//     }
+
+//     return !batch.empty();
+// }
+
+bool utils::read_batch_of_n_sequences_with_ids(
+    std::istream& in,
+    std::vector<std::pair<std::string, std::vector<unsigned char>>>& batch,
+    size_t N)
+{
+    batch.clear();
+    std::string line, seq, current_id;
+    std::streampos last_pos;  // <== 记录上一个位置
+
+    while (true) {
+        last_pos = in.tellg();
+        if (!std::getline(in, line)) break;
+
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+
+        if (line[0] == '>') {
+            if (!seq.empty()) {
+                std::vector<unsigned char> seq_vec;
+                seq_vec.reserve(seq.size());
+                for (char c : seq)
+                    seq_vec.emplace_back(std::toupper(static_cast<unsigned char>(c)));
+
+                if (current_id.empty())
+                    std::cerr << "[WARN] Missing ID before storing a sequence.\n";
+
+                batch.emplace_back(current_id, std::move(seq_vec));
+                seq.clear();
+
+                // ⚠️ 达到上限：回退文件指针到当前 header
+                if (batch.size() >= N) {
+                    in.seekg(last_pos);
+                    return true;
+                }
+            }
+
+            current_id = (line.size() > 1) ? line.substr(1) : "";
+        } else {
+            seq += line;
+        }
+    }
+
+    // 最后一条序列别漏
+    if (!seq.empty()) {
+        std::vector<unsigned char> seq_vec;
+        seq_vec.reserve(seq.size());
+        for (char c : seq)
+            seq_vec.emplace_back(std::toupper(static_cast<unsigned char>(c)));
+        batch.emplace_back(current_id, std::move(seq_vec));
+    }
+
+    return !batch.empty();
+}
+
+
+// add for viral msa --- end---
+
+
 void insert_others(utils::Insertion2 That, utils::Insertion2 This, std::vector<std::vector<utils::Insertion2>>& more_insertions,
-    int k, int sequence_number, int* ii)
+                   int k, int sequence_number, int* ii)
 {
     for (int m = 0; m < sequence_number; m++)
     {
@@ -276,8 +523,8 @@ void insert_others(utils::Insertion2 That, utils::Insertion2 This, std::vector<s
 
 
 void utils::insert_and_write_file(std::ostream& os, std::vector<std::vector<unsigned char>>& sequences,
-    std::vector<std::vector<Insertion>>& insertions, const std::vector<std::vector<Insertion>>& N_insertions,
-    std::vector<std::string>& name, std::vector<bool>& sign)
+                                  std::vector<std::vector<Insertion>>& insertions, const std::vector<std::vector<Insertion>>& N_insertions,
+                                  std::vector<std::string>& name, std::vector<bool>& sign)
 {
 
     std::string each_sequence, each_line;
@@ -288,7 +535,7 @@ void utils::insert_and_write_file(std::ostream& os, std::vector<std::vector<unsi
     int* ii = new int[sequence_number]();
     int i = 0, j = 0, pre = 0, diff, mi, k;
     std::vector<std::vector<Insertion2>> more_insertions(sequence_number);
-    
+
     size_t g_num;
 
     for (int k = 0; k < sequence_number; k++)  len_sequences[k] = sequences[k].size();
@@ -305,7 +552,7 @@ void utils::insert_and_write_file(std::ostream& os, std::vector<std::vector<unsi
                 g_num += insertions[k][i].number;
                 if (N_insertions[k][j].number > insertions[k][i].number)
                 {
-                    i_all_insertions.emplace_back(Insertion2({ insertions[k][i].index ,insertions[k][i].number, 0 })); 
+                    i_all_insertions.emplace_back(Insertion2({ insertions[k][i].index ,insertions[k][i].number, 0 }));
                     insert_others(Insertion2({ insertions[k][i].index + g_num ,N_insertions[k][j].number - insertions[k][i].number, 0 }), utils::Insertion2({ insertions[k][i].index + g_num ,0, N_insertions[k][j].number - insertions[k][i].number }), more_insertions, k, sequence_number, ii);
                 }
                 else
@@ -315,7 +562,7 @@ void utils::insert_and_write_file(std::ostream& os, std::vector<std::vector<unsi
                 i++;
                 j++;
             }
-            else if (insertions[k][i].index > N_insertions[k][j].index) 
+            else if (insertions[k][i].index > N_insertions[k][j].index)
             {
                 insert_others(Insertion2({ N_insertions[k][j].index + g_num ,N_insertions[k][j].number, 0 }), utils::Insertion2({ N_insertions[k][j].index + g_num ,0, N_insertions[k][j].number }), more_insertions, k, sequence_number, ii);
                 j++;
@@ -327,12 +574,12 @@ void utils::insert_and_write_file(std::ostream& os, std::vector<std::vector<unsi
                 i++;
             }
         }
-        while (j < N_insertions[k].size()) 
+        while (j < N_insertions[k].size())
         {
             insert_others(Insertion2({ N_insertions[k][j].index + g_num ,N_insertions[k][j].number, 0 }), utils::Insertion2({ N_insertions[k][j].index + g_num ,0, N_insertions[k][j].number }), more_insertions, k, sequence_number, ii);
             j++;
         }
-        while (i < insertions[k].size()) 
+        while (i < insertions[k].size())
         {
             g_num += insertions[k][i].number;
             i_all_insertions.emplace_back(Insertion2({ insertions[k][i].index, 0,insertions[k][i].number }));
@@ -472,7 +719,7 @@ void utils::insert_and_write_file(std::ostream& os, std::vector<std::vector<unsi
         std::ifstream tmpi(arguments::tmp_file_name, std::ios::binary | std::ios::in);
         while (std::getline(tmpi, each_line))
         {
-            if (each_line.size() == 0 || (each_line.size() == 1 && (int)each_line[0] == 13)) 
+            if (each_line.size() == 0 || (each_line.size() == 1 && (int)each_line[0] == 13))
                 continue;
             each_sequence += each_line;
             if ((int)(*each_line.rbegin()) == 13)
@@ -515,8 +762,8 @@ void utils::insert_and_write_file(std::ostream& os, std::vector<std::vector<unsi
 }
 
 
-int* utils::vector_insertion_gap_N(std::vector<std::vector<unsigned char>>& sequences, 
-    std::vector<std::vector<Insertion>>& insertions, const std::vector<std::vector<Insertion>>& N_insertions) //写回比对结果
+int* utils::vector_insertion_gap_N(std::vector<std::vector<unsigned char>>& sequences,
+                                   std::vector<std::vector<Insertion>>& insertions, const std::vector<std::vector<Insertion>>& N_insertions) //写回比对结果
 {
     const size_t sequence_number = insertions.size();
     std::vector<std::vector<Insertion2>> all_insertions;
@@ -545,7 +792,7 @@ int* utils::vector_insertion_gap_N(std::vector<std::vector<unsigned char>>& sequ
                 g_num += insertions[k][i].number;
                 if (N_insertions[k][j].number > insertions[k][i].number)
                 {
-                    i_all_insertions.emplace_back(Insertion2({ insertions[k][i].index ,insertions[k][i].number, 0 }));  
+                    i_all_insertions.emplace_back(Insertion2({ insertions[k][i].index ,insertions[k][i].number, 0 }));
                     insert_others(Insertion2({ insertions[k][i].index + g_num ,N_insertions[k][j].number - insertions[k][i].number, 0 }), utils::Insertion2({ insertions[k][i].index + g_num ,0, N_insertions[k][j].number - insertions[k][i].number }), more_insertions, k, sequence_number, ii);
                 }
                 else
@@ -555,7 +802,7 @@ int* utils::vector_insertion_gap_N(std::vector<std::vector<unsigned char>>& sequ
                 i++;
                 j++;
             }
-            else if (insertions[k][i].index > N_insertions[k][j].index) 
+            else if (insertions[k][i].index > N_insertions[k][j].index)
             {
                 insert_others(Insertion2({ N_insertions[k][j].index + g_num ,N_insertions[k][j].number, 0 }), utils::Insertion2({ N_insertions[k][j].index + g_num ,0, N_insertions[k][j].number }), more_insertions, k, sequence_number, ii);
                 j++;
@@ -567,12 +814,12 @@ int* utils::vector_insertion_gap_N(std::vector<std::vector<unsigned char>>& sequ
                 i++;
             }
         }
-        while (j < N_insertions[k].size()) 
+        while (j < N_insertions[k].size())
         {
             insert_others(Insertion2({ N_insertions[k][j].index + g_num ,N_insertions[k][j].number, 0 }), utils::Insertion2({ N_insertions[k][j].index + g_num ,0, N_insertions[k][j].number }), more_insertions, k, sequence_number, ii);
             j++;
         }
-        while (i < insertions[k].size()) 
+        while (i < insertions[k].size())
         {
             g_num += insertions[k][i].number;
             i_all_insertions.emplace_back(Insertion2({ insertions[k][i].index, 0,insertions[k][i].number }));
@@ -761,8 +1008,8 @@ int* utils::vector_insertion_gap_N(std::vector<std::vector<unsigned char>>& sequ
 
 
 void utils::insert_and_write_fasta(std::ostream& os, std::vector<std::vector<unsigned char>>& sequences,
-    std::vector<std::vector<Insertion>>& insertions, std::vector<std::vector<Insertion>>& N_insertions,
-    std::vector<std::string>& name,bool TU)
+                                   std::vector<std::vector<Insertion>>& insertions, std::vector<std::vector<Insertion>>& N_insertions,
+                                   std::vector<std::string>& name,bool TU)
 
 {
     if (!TU) chars[4] = 'U';
@@ -775,7 +1022,7 @@ void utils::insert_and_write_fasta(std::ostream& os, std::vector<std::vector<uns
     for (int i = 0; i < name.size(); i++)
         if (name_len < name[i].size())
             name_len = name[i].size();
-    const auto align_start1 = std::chrono::high_resolution_clock::now(); 
+    const auto align_start1 = std::chrono::high_resolution_clock::now();
 
     std::vector<std::vector<Insertion2>> all_insertions;
     std::vector<Insertion2> i_all_insertions;
@@ -826,7 +1073,7 @@ void utils::insert_and_write_fasta(std::ostream& os, std::vector<std::vector<uns
                 i++;
             }
         }
-        while (j < N_insertions[k].size()) 
+        while (j < N_insertions[k].size())
         {
             insert_others(Insertion2({ N_insertions[k][j].index + g_num ,N_insertions[k][j].number, 0 }), utils::Insertion2({ N_insertions[k][j].index + g_num ,0, N_insertions[k][j].number }), more_insertions, k, sequence_number, ii);
             j++;
@@ -971,7 +1218,7 @@ void utils::insert_and_write_fasta(std::ostream& os, std::vector<std::vector<uns
         }while (ti < more) sequences[i][k++] = tmp_vector[ti++];
         os << "> " << name[i]<< "\n";
         for (k = 0; k < sequences[i].size(); k++) os << chars[sequences[i][k]];
-        os << "\n";   
+        os << "\n";
         std::vector<unsigned char>().swap(sequences[i]);
     }
     std::vector<unsigned char>().swap(sequences[0]);
@@ -1011,7 +1258,7 @@ void utils::insert_and_write(std::ostream& os, std::istream& is, const std::vect
                 }
 
                 utils::Insertion::insert_gaps(each_sequence.cbegin(), each_sequence.cend(),
-                    insertions[count].cbegin(), insertions[count].cend(), std::back_inserter(each_sequence_aligned), '-');
+                                              insertions[count].cbegin(), insertions[count].cend(), std::back_inserter(each_sequence_aligned), '-');
 
                 if (arguments::output_matrix)
                     os << each_sequence_aligned;
@@ -1039,7 +1286,7 @@ void utils::insert_and_write(std::ostream& os, std::istream& is, const std::vect
     }
 
     utils::Insertion::insert_gaps(each_sequence.cbegin(), each_sequence.cend(),
-        insertions.back().cbegin(), insertions.back().cend(), std::back_inserter(each_sequence_aligned), '-');
+                                  insertions.back().cbegin(), insertions.back().cend(), std::back_inserter(each_sequence_aligned), '-');
 
     if (arguments::output_matrix)
         os << each_sequence_aligned;

@@ -15,8 +15,8 @@ namespace utils
             unsigned weight;
 
             edge_type(size_t to, unsigned weight)
-                : to(to)
-                , weight(weight)
+                    : to(to)
+                    , weight(weight)
             {}
         };
 
@@ -27,8 +27,8 @@ namespace utils
             unsigned weight;
 
             reverse_edge_type(size_t from, unsigned weight)
-                : from(from)
-                , weight(weight)
+                    : from(from)
+                    , weight(weight)
             {}
         };
 

@@ -2,6 +2,9 @@
 //std::string arguments::in_file_name = "/home/zqzhoutong/stmsa-BWT/data/people13.fasta";
 //std::string arguments::out_file_name = "/home/zqzhoutong/stmsa-BWT/data/test/people13ed.fasta";
 std::string arguments::in_file_name;
+// add for viral msa --- star---
+std::string arguments::refer_file_name;
+// add for viral msa --- end---
 std::string arguments::out_file_name;
 std::string arguments::tmp_file_name;
 std::string arguments::score_file;
