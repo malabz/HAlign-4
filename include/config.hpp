@@ -107,7 +107,11 @@ inline void setupLoggerWithFile(std::filesystem::path log_dir) {
 		LOGGER_NAME, sinks.begin(), sinks.end(), spdlog::thread_pool(), spdlog::async_overflow_policy::block);
 
 	spdlog::set_default_logger(logger);
-	spdlog::set_level(spdlog::level::trace);
+#ifdef _DEBUG
+	spdlog::set_level(spdlog::level::debug);
+#else
+	spdlog::set_level(spdlog::level::info);
+#endif
 	spdlog::flush_every(std::chrono::seconds(3));
 }
 

@@ -21,42 +21,47 @@ struct Options {
 
     int threads = 1;            // -t
     int kmer_size = 15;         // --kmer-size
+    int cons_n = 1000;         // --cons-n
 
     bool keep_length = false;   // --keep-length
 };
 
 // 这里不再返回 Options，也不调用 CLI11_PARSE
 // 只负责：把参数定义到 app，并绑定到 opt
-static void setup_cli(CLI::App& app, Options& opt) {
+static void setupCli(CLI::App& app, Options& opt) {
     app.description("HAlign4 / MSA tool");
 
-    // 必须参数
-    app.add_option("-i", opt.input, "Input sequences (file path)")
+   // 必须参数（同时支持短参数和长参数）
+    app.add_option("-i,--input", opt.input, "Input sequences (file path)")
         ->required()
         ->check(CLI::ExistingFile);
 
-    app.add_option("-o", opt.output, "Output result (file path)")
+    app.add_option("-o,--output", opt.output, "Output result (file path)")
         ->required();
 
-    app.add_option("-w", opt.workdir, "Working directory")
+    app.add_option("-w,--workdir", opt.workdir, "Working directory")
         ->required();
 
-    // 可选参数
-    app.add_option("-c", opt.center_path, "Center sequence path")
+    // 可选参数（增加长参数形式）
+    app.add_option("-c,--center-path", opt.center_path, "Center sequence path")
         ->check(CLI::ExistingFile);
 
     // 如果 -p 是“可执行文件路径”，ExistingFile 通常也能用；
     // 若你希望允许仅命令名（在 PATH 中），这里就不要 check
-    app.add_option("-p", opt.msa_cmd_path, "High-quality method command path")
+    app.add_option("-p,--msa-cmd", opt.msa_cmd_path, "High-quality method command path")
         ->check(CLI::ExistingFile);
 
-    app.add_option("-t", opt.threads, "Number of threads")
+    app.add_option("-t,--thread", opt.threads, "Number of threads")
         ->default_val(1)
         ->check(CLI::Range(1, 100000));
 
     app.add_option("--kmer-size", opt.kmer_size, "K-mer size")
         ->default_val(15)
         ->check(CLI::Range(1, 4096));
+
+    app.add_option("--cons-n", opt.cons_n, "Number of sequences for consensus")
+        ->default_val(1000)
+        ->check(CLI::Range(1, 1000000));
 
     app.add_flag("--keep-length", opt.keep_length, "Keep sequence length unchanged");
 }
@@ -84,6 +89,7 @@ static void logParsedOptions(const Options& opt) {
         {"msa_cmd_path", toString(opt.msa_cmd_path, valW)},
         {"threads", std::to_string(opt.threads)},
         {"kmer_size", std::to_string(opt.kmer_size)},
+        {"cons_n", std::to_string(opt.cons_n)},
         {"keep_length", boolToStr(opt.keep_length)}
     };
 
@@ -142,6 +148,9 @@ static void checkOption(const Options& opt) {
     if (opt.kmer_size <= 0) {
         throw std::runtime_error("kmer_size must be > 0");
     }
+    if (opt.cons_n <= 0) {
+        throw std::runtime_error("cons_n must be > 0");
+    }
 
     if (opt.workdir.empty()) {
         throw std::runtime_error("workdir is empty");
@@ -174,8 +183,6 @@ static void checkOption(const Options& opt) {
 }
 
 int main(int argc, char** argv) {
-
-
     // 检验所有的参数是否合法，如果不合法打印并且退出
     try
     {
@@ -186,10 +193,12 @@ int main(int argc, char** argv) {
         Options opt;
         CLI::App app{"halign4"};
 
-        setup_cli(app, opt);
+        setupCli(app, opt);
 
         // 关键：CLI11_PARSE 必须在返回 int 的函数里用（典型就是 main）
         CLI11_PARSE(app, argc, argv);
+
+        setupLoggerWithFile(opt.workdir);
         // 解析成功后，opt 已被填充
         logParsedOptions(opt);
 
@@ -197,6 +206,25 @@ int main(int argc, char** argv) {
         checkOption(opt);
 
         // TODO: 这里开始调用你的算法 pipeline
+        // 预处理原始数据
+        // 输入文件路径，工作目录
+        // 输出清理好的数据和共识序列fasta文件
+
+        // 获取共识序列
+        // 输入共识序列fasta文件路径，调用别的方法比对
+        // 最后返回共识序列
+
+
+        // 提取minimzer估算相似度分组
+        // 输入清理好的数据fasta文件路径，工作目录，kmer_size
+        // 输出相似度和fasta文件路径
+
+        // 分组多序列比对
+        // 输入相似度和fasta文件路径
+        // 写出所有双序列比对结果和共识序列到文件
+
+        // 合并得到最终结果
+
         // run_msa(opt);
 
         return 0;
@@ -207,7 +235,7 @@ int main(int argc, char** argv) {
     } catch (...) {
         spdlog::error("Fatal error: unknown exception");
         spdlog::error("halign4 End!");
-        return 2;
+        return 1;
     }
 
     return 0;
