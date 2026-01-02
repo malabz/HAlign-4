@@ -9,6 +9,15 @@ set(SEQAN3_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/extern/seqan3/include")
 
 list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/extern/seqan3/share/cmake")
 
+find_package(CURL)
+if (CURL_FOUND)
+    target_link_libraries(halign4 PRIVATE CURL::libcurl)
+    target_compile_definitions(halign4 PRIVATE HALIGN4_HAVE_LIBCURL=1)
+else()
+    message(STATUS "libcurl not found; downloadFile will fall back to calling curl/wget at runtime")
+endif()
+
+
 include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/extern/seqan3/include
@@ -21,7 +30,7 @@ find_package (seqan3 3.0 REQUIRED)
 
 add_executable(halign4
         src/halign4.cpp
-        include/utils.h)
+        src/utils/preprocess.cpp)
 
 target_link_libraries (halign4 seqan3::seqan3)
 

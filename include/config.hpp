@@ -47,6 +47,12 @@ typedef uint32_t uint_t;
 #define I_MIN	INT32_MIN
 #endif
 
+// 工作目录体系
+const std::string WORKDIR_DATA = "data";         // 原始数据目录
+
+const std::string DATA_RAW = "raw_data";        // 原始数据子目录
+const std::string DATA_CLEAN = "clean_data";      // 清理后数据子目录
+
 // ------------------------------------------------------------------
 // CLI11 自定义格式器（美化选项输出）
 // ------------------------------------------------------------------

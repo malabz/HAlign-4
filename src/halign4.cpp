@@ -1,16 +1,8 @@
-//
-// Created by 30451 on 2026/1/1.
-//
-
-#include <iostream>
 #include <config.hpp>
 #include <utils.h>
-#include <string>
-#include <vector>
-#include <sstream>
-#include <iomanip>
-#include <filesystem>
-#include <stdexcept>
+#include <thread>
+
+#include "preprocess.h"
 
 struct Options {
     std::string input;          // -i
@@ -20,7 +12,7 @@ struct Options {
     std::string center_path;    // -c
     std::string msa_cmd_path;    // -p
 
-    int threads = 1;            // -t
+    int threads = [](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }();            // -t
     int kmer_size = 15;         // --kmer-size
     int cons_n = 1000;         // --cons-n
 
@@ -53,7 +45,7 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::ExistingFile);
 
     app.add_option("-t,--thread", opt.threads, "Number of threads")
-        ->default_val(1)
+        ->default_val([](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }())
         ->check(CLI::Range(1, 100000));
 
     app.add_option("--kmer-size", opt.kmer_size, "K-mer size")
@@ -176,6 +168,7 @@ int main(int argc, char** argv) {
         // 预处理原始数据
         // 输入文件路径，工作目录
         // 输出清理好的数据和共识序列fasta文件
+        preprocessInputFasta(opt.input, opt.workdir);
 
         // 获取共识序列
         // 输入共识序列fasta文件路径，调用别的方法比对
@@ -204,6 +197,4 @@ int main(int argc, char** argv) {
         spdlog::error("halign4 End!");
         return 1;
     }
-
-    return 0;
 }
