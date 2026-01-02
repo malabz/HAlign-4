@@ -20,7 +20,8 @@ include_directories(
 find_package (seqan3 3.0 REQUIRED)
 
 add_executable(halign4
-        src/halign4.cpp)
+        src/halign4.cpp
+        include/utils.h)
 
 target_link_libraries (halign4 seqan3::seqan3)
 

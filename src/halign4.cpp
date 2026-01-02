@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <config.hpp>
+#include <utils.h>
 #include <string>
 #include <vector>
 #include <sstream>
@@ -120,66 +121,32 @@ static void logParsedOptions(const Options& opt) {
     spdlog::info("\n{}", oss.str());
 }
 
-// 新增：检查选项的合法性并处理 workdir（必须为空文件夹；如果不存在则创建）
 static void checkOption(const Options& opt) {
-    namespace fs = std::filesystem;
+    // 文件相关：统一调用 file_io
+    file_io::requireRegularFile(opt.input, "input");
 
-    // input must exist
-    if (opt.input.empty()) {
-        throw std::runtime_error("input is empty");
+    if (!opt.center_path.empty()) {
+        file_io::requireRegularFile(opt.center_path, "center_path");
     }
-    if (!fs::exists(opt.input)) {
-        throw std::runtime_error("input file does not exist: " + opt.input);
-    }
-
-    // optional center_path must exist if provided
-    if (!opt.center_path.empty() && !fs::exists(opt.center_path)) {
-        throw std::runtime_error("center_path does not exist: " + opt.center_path);
+    if (!opt.msa_cmd_path.empty()) {
+        file_io::requireRegularFile(opt.msa_cmd_path, "msa_cmd_path");
     }
 
-    // optional msa_cmd_path must exist if provided
-    if (!opt.msa_cmd_path.empty() && !fs::exists(opt.msa_cmd_path)) {
-        throw std::runtime_error("msa_cmd_path does not exist: " + opt.msa_cmd_path);
-    }
+    // 数值参数相关：仍在这里检查
+    if (opt.threads <= 0) throw std::runtime_error("threads must be > 0");
+    if (opt.kmer_size <= 0) throw std::runtime_error("kmer_size must be > 0");
+    if (opt.cons_n <= 0) throw std::runtime_error("cons_n must be > 0");
 
-    if (opt.threads <= 0) {
-        throw std::runtime_error("threads must be > 0");
-    }
-    if (opt.kmer_size <= 0) {
-        throw std::runtime_error("kmer_size must be > 0");
-    }
-    if (opt.cons_n <= 0) {
-        throw std::runtime_error("cons_n must be > 0");
-    }
-
-    if (opt.workdir.empty()) {
-        throw std::runtime_error("workdir is empty");
-    }
-
-    fs::path wd{opt.workdir};
-
-    std::error_code ec;
-    if (!fs::exists(wd, ec)) {
-        // try to create
-        if (!fs::create_directories(wd, ec) || ec) {
-            throw std::runtime_error("failed to create workdir: " + opt.workdir + " (" + ec.message() + ")");
-        }
-        spdlog::info("Created workdir: {}", opt.workdir);
-    } else {
-        if (!fs::is_directory(wd, ec) || ec) {
-            throw std::runtime_error("workdir exists but is not a directory: " + opt.workdir);
-        }
-        // ensure empty
-        auto it = fs::directory_iterator(wd, ec);
-        if (ec) {
-            throw std::runtime_error("cannot read workdir: " + opt.workdir + " (" + ec.message() + ")");
-        }
-#ifndef _DEBUG
-        if (it != fs::end(it)) {
-            throw std::runtime_error("workdir must be empty: " + opt.workdir);
-        }
+    // workdir：Debug 下允许非空，Release 下必须空（与你现有逻辑一致）
+#ifdef _DEBUG
+    constexpr bool must_be_empty = false;
+#else
+    constexpr bool must_be_empty = true;
 #endif
-    }
+    file_io::prepareEmptydir(opt.workdir, must_be_empty);
+
+    // 可选：确保输出父目录存在（如果你希望自动创建）
+    // file_io::ensureParentDirExists(opt.output);
 }
 
 int main(int argc, char** argv) {
