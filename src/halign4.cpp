@@ -197,6 +197,7 @@ int main(int argc, char** argv) {
         {
             file_io::copyFile(consensus_aligned_file,FilePath(opt.output));
             spdlog::info("All sequences processed; final output written to {}", opt.output);
+            spdlog::info("halign4 End!");
             return 0;
         }
 
