@@ -16,6 +16,7 @@ include_directories(
         ${PROJECT_SOURCE_DIR}/extern/seqan3/include
         ${PROJECT_SOURCE_DIR}/extern/CLI11/include
         ${PROJECT_SOURCE_DIR}/extern/spdlog/include
+        ${PROJECT_SOURCE_DIR}/extern/cereal/include
 )
 
 # require seqan3 with a version between >=3.0.0 and <4.0.0
