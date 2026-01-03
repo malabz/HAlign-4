@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
         const std::size_t batch_size = 512; // 可调：每轮处理的序列数
         spdlog::info("Starting consensus generation (double-buffered), batch_size={}...", batch_size);
         auto t_start = std::chrono::steady_clock::now();
-        std::string consensus_string = consensus::generateConsensusSequenceDoubleBuffered(
+        std::string consensus_string = consensus::generateConsensusSequence(
             consensus_aligned_file,
             consensus_file, // 覆盖写回
             consensus_json_file,
