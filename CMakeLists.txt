@@ -55,6 +55,27 @@ target_link_libraries(halign4 PRIVATE seqan3::seqan3 OpenMP::OpenMP_CXX)
 
 
 
+# 在 Release 时添加激进的优化标志：GCC/Clang 与 MSVC 分别处理
+if (MSVC)
+    # MSVC 优化：/O2 开启优化，/arch:AVX2 请求 AVX2 指令集（可根据需要改为 AVX 或 AVX512），/GL 全局优化
+    target_compile_options(halign4 PRIVATE
+        $<$<CONFIG:Release>:/O2>
+        $<$<CONFIG:Release>:/arch:AVX2>
+        $<$<CONFIG:Release>:/GL>
+    )
+    # 链接时启用链接时期优化（LTCG）
+    target_link_options(halign4 PRIVATE
+        $<$<CONFIG:Release>:/LTCG>
+    )
+else()
+    # GCC / Clang: -O3, -march=native, -flto, -pipe
+    target_compile_options(halign4 PRIVATE
+        $<$<CONFIG:Release>:-O3>
+        $<$<CONFIG:Release>:-march=native>
+    )
+endif()
+
+
 target_compile_definitions(halign4 PRIVATE
         $<$<CONFIG:Debug>:_DEBUG>
 )

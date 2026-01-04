@@ -141,19 +141,41 @@ namespace seq_io
         }
     }
 
+    // cpp
     void FastaWriter::write(const SeqRecord& rec)
     {
         if (!out_) throw std::runtime_error("FastaWriter output stream is not ready");
 
-        out_.put('>');
-        out_.write(rec.id.data(), static_cast<std::streamsize>(rec.id.size()));
+        // 构造并一次性写入 header
+        std::string header;
+        header.reserve(1 + rec.id.size() + (rec.desc.empty() ? 0 : 1 + rec.desc.size()) + 1);
+        header.push_back('>');
+        header.append(rec.id);
         if (!rec.desc.empty()) {
-            out_.put(' ');
-            out_.write(rec.desc.data(), static_cast<std::streamsize>(rec.desc.size()));
+            header.push_back(' ');
+            header.append(rec.desc);
         }
-        out_.put('\n');
+        header.push_back('\n');
+        out_.write(header.data(), static_cast<std::streamsize>(header.size()));
 
-        writeWrapped(out_, rec.seq, line_width_);
+        // 构造带换行的序列缓冲区并一次性写出，减少多次 write/put 调用
+        const std::size_t L = rec.seq.size();
+        const std::size_t width = (line_width_ == 0) ? 80 : line_width_;
+
+        if (L == 0) {
+            out_.put('\n');
+            return;
+        }
+
+        std::string seqbuf;
+        seqbuf.reserve(L + (L / width) + 1);
+        for (std::size_t i = 0; i < L; i += width) {
+            const std::size_t n = (i + width <= L) ? width : (L - i);
+            seqbuf.append(rec.seq.data() + static_cast<std::size_t>(i), n);
+            seqbuf.push_back('\n');
+        }
+
+        out_.write(seqbuf.data(), static_cast<std::streamsize>(seqbuf.size()));
     }
 
     void FastaWriter::flush()

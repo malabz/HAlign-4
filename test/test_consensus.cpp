@@ -129,7 +129,7 @@ static void writeLargeAlignedFasta(const fs::path& p, std::size_t n_seqs, std::s
 
 static void runOnePerf(std::size_t n_seqs) {
     constexpr std::size_t LEN   = 30000;
-    constexpr std::size_t BATCH = 5120;
+    constexpr std::size_t BATCH = 512;
 
     if (!perfEnabled()) {
         MESSAGE("perf disabled (HALIGN4_RUN_PERF not set) - skip");
@@ -211,7 +211,7 @@ static void runOnePerf(std::size_t n_seqs) {
         (void)consensus::generateConsensusSequence(
             in_fa, out_fa, out_js,
             /*seq_limit=*/0,
-            /*threads=*/8,
+            /*threads=*/threads_override,
             /*batch_size=*/BATCH
         );
         auto t1 = std::chrono::steady_clock::now();
@@ -401,7 +401,7 @@ TEST_CASE("len=30000 n=100 batch=512 threads=max") {
 }
 
 
-    TEST_CASE("len=30000 n=1000 batch=512 threads=max") {
+    TEST_CASE("len=30000 n=10000 batch=512 threads=max") {
     runOnePerf(1000);
 }
 // TEST_CASE("len=30000 n=100000 batch=512 threads=max") {

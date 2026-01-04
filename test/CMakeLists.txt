@@ -48,6 +48,23 @@ target_link_libraries(halign4_test_support PUBLIC
         OpenMP::OpenMP_CXX
 )
 
+# 在 Release 时对测试支持库也启用与主项目一致的激进优化
+if (MSVC)
+    target_compile_options(halign4_test_support PRIVATE
+        $<$<CONFIG:Release>:/O2>
+        $<$<CONFIG:Release>:/arch:AVX2>
+        $<$<CONFIG:Release>:/GL>
+    )
+    target_link_options(halign4_test_support PRIVATE
+        $<$<CONFIG:Release>:/LTCG>
+    )
+else()
+    target_compile_options(halign4_test_support PRIVATE
+        $<$<CONFIG:Release>:-O3>
+        $<$<CONFIG:Release>:-march=native>
+    )
+endif()
+
 if (CURL_FOUND)
     target_link_libraries(halign4_test_support PUBLIC CURL::libcurl)
     target_compile_definitions(halign4_test_support PUBLIC HALIGN4_HAVE_LIBCURL=1)
@@ -68,9 +85,32 @@ target_compile_definitions(halign4_test_support PUBLIC
 add_executable(halign4_tests
         "${CMAKE_CURRENT_LIST_DIR}/doctest_main.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_consensus.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_read_fasta.cpp"
 )
 
 target_link_libraries(halign4_tests PRIVATE halign4_test_support)
+
+# 对测试可执行文件也应用 Release 优化选项
+if (MSVC)
+    target_compile_options(halign4_tests PRIVATE
+        $<$<CONFIG:Release>:/O2>
+        $<$<CONFIG:Release>:/arch:AVX2>
+        $<$<CONFIG:Release>:/GL>
+    )
+    target_link_options(halign4_tests PRIVATE
+        $<$<CONFIG:Release>:/LTCG>
+    )
+else()
+    target_compile_options(halign4_tests PRIVATE
+        $<$<CONFIG:Release>:-O3>
+        $<$<CONFIG:Release>:-march=native>
+        $<$<CONFIG:Release>:-flto>
+        $<$<CONFIG:Release>:-pipe>
+    )
+    target_link_options(halign4_tests PRIVATE
+        $<$<CONFIG:Release>:-flto>
+    )
+endif()
 
 # 建议显式启用（即使 include(CTest) 已经做了也不冲突）
 enable_testing()
@@ -80,4 +120,7 @@ enable_testing()
 
 add_test(NAME consensus
         COMMAND halign4_tests --test-suite=consensus)
+
+add_test(NAME read_fasta
+        COMMAND halign4_tests --test-suite=read_fasta)
 set_tests_properties(consensus PROPERTIES TIMEOUT 0)
