@@ -1,5 +1,6 @@
 #include "utils.h"
 #include <cstdio>
+#include <cstdlib> // for malloc/free
 
 #if __has_include(<zlib.h>)
     #include <zlib.h>
@@ -33,6 +34,11 @@ namespace seq_io
 #endif
         kseq_t* seq{nullptr};
         FilePath file_path; // store the input path for diagnostics and error messages
+
+        // 新增：用于加大 stdio / zlib 缓冲的持久化缓冲区（非 zlib 情况）
+        // 这样可以减少 fread/gzread 的系统调用次数，提高大文件读取吞吐量
+        char* io_buf{nullptr};
+        std::size_t io_buf_size{1 << 20}; // 默认 1 MiB，可根据需要调整
     };
 
     static std::runtime_error makeIoError(const std::string& msg, const FilePath& p)
@@ -52,18 +58,33 @@ namespace seq_io
         impl_->file_path = file_path;
 
 #if HALIGN4_HAVE_ZLIB
-        // gzopen/gzread 是 kseq 常用组合。:contentReference[oaicite:2]{index=2}
-        // 额外说明：gzopen 在读非 gzip 文件时也会直接读取（不解压），所以一套 reader 可覆盖 .gz / 非 .gz。:contentReference[oaicite:3]{index=3}
+        // gzopen/gzread 是 kseq 常用组合。
         impl_->fp = gzopen(file_path.string().c_str(), "rb");
         if (!impl_->fp) {
             throw makeIoError("failed to open input", file_path);
         }
+
+        // 提升 zlib 的内部缓冲区大小以加速大文件读取（单位：字节，接口为 int）
+        // 如果 io_buf_size 超过 int 上限，gzbuffer 的行为未定义；这里选用 1MiB，安全且有效。
+        gzbuffer(impl_->fp, static_cast<int>(impl_->io_buf_size));
+
         impl_->seq = kseq_init(impl_->fp);
 #else
         impl_->fp = std::fopen(file_path.string().c_str(), "rb");
         if (!impl_->fp) {
             throw makeIoError("failed to open input", file_path);
         }
+
+        // 为 stdio 分配一个较大的缓冲区并设置为全缓冲，减少 fread 的系统调用次数
+        impl_->io_buf = static_cast<char*>(std::malloc(impl_->io_buf_size));
+        if (impl_->io_buf) {
+            if (setvbuf(impl_->fp, impl_->io_buf, _IOFBF, static_cast<size_t>(impl_->io_buf_size)) != 0) {
+                // 如果设置失败，释放并继续（仍能工作，只是没有额外加速）
+                std::free(impl_->io_buf);
+                impl_->io_buf = nullptr;
+            }
+        }
+
         impl_->seq = kseq_init(impl_->fp);
 #endif
 
@@ -90,6 +111,11 @@ namespace seq_io
         if (impl_->fp) {
             std::fclose(impl_->fp);
             impl_->fp = nullptr;
+        }
+        // 释放为 stdio 分配的缓冲区（必须在 fclose 之后）
+        if (impl_->io_buf) {
+            std::free(impl_->io_buf);
+            impl_->io_buf = nullptr;
         }
 #endif
     }
