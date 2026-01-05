@@ -16,16 +16,7 @@ else()
 endif()
 get_filename_component(HALIGN4_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
-# 关键：让 version check 能找到 version.hpp
-set(SEQAN3_INCLUDE_DIR "${HALIGN4_ROOT}/extern/seqan3/include" CACHE PATH "" FORCE)
 
-# 关键：显式指向 seqan3-config.cmake 所在目录（避免找错）
-set(seqan3_DIR "${HALIGN4_ROOT}/extern/seqan3/share/cmake/seqan3" CACHE PATH "" FORCE)
-# 你也可以同时保留 prefix path（可选）
-list(PREPEND CMAKE_PREFIX_PATH "${HALIGN4_ROOT}/extern/seqan3/share/cmake")
-
-find_package(seqan3 3.0 REQUIRED)
-find_package(seqan3 3.0 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(CURL)
 find_package(ZLIB)
@@ -42,7 +33,6 @@ add_library(halign4_test_support STATIC
 
 target_include_directories(halign4_test_support PUBLIC
         "${HALIGN4_ROOT}/include"
-        "${HALIGN4_ROOT}/extern/seqan3/include"
         "${HALIGN4_ROOT}/extern/CLI11/include"
         "${HALIGN4_ROOT}/extern/spdlog/include"
         "${HALIGN4_ROOT}/extern/cereal/include"
@@ -50,7 +40,6 @@ target_include_directories(halign4_test_support PUBLIC
 )
 
 target_link_libraries(halign4_test_support PUBLIC
-        seqan3::seqan3
         OpenMP::OpenMP_CXX
 )
 

@@ -11,24 +11,13 @@ else()
     message(STATUS "CMAKE_BUILD_TYPE is: ${CMAKE_BUILD_TYPE}")
 endif()
 
-set(SEQAN3_DIR "${CMAKE_SOURCE_DIR}/extern/seqan3/share/cmake/seqan3")
-# set(CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/extern/seqan3/share/cmake/seqan3")
-set(SEQAN3_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/extern/seqan3/include")
-
-list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/extern/seqan3/share/cmake")
-
-
 
 include_directories(
         ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/extern/seqan3/include
         ${PROJECT_SOURCE_DIR}/extern/CLI11/include
         ${PROJECT_SOURCE_DIR}/extern/spdlog/include
         ${PROJECT_SOURCE_DIR}/extern/cereal/include
 )
-
-# require seqan3 with a version between >=3.0.0 and <4.0.0
-find_package (seqan3 3.0 REQUIRED)
 
 add_executable(halign4
         src/halign4.cpp
@@ -60,7 +49,7 @@ endif()
 
 find_package(OpenMP REQUIRED)
 
-target_link_libraries(halign4 PRIVATE seqan3::seqan3 OpenMP::OpenMP_CXX)
+target_link_libraries(halign4 PRIVATE OpenMP::OpenMP_CXX)
 
 
 
