@@ -102,23 +102,77 @@ namespace consensus
                                      ", got " + std::to_string(s.size()));
         }
 
+        // 预取常量以减少循环内查找开销
+        const unsigned char* data = reinterpret_cast<const unsigned char*>(s.data());
+        std::uint8_t* base_map = const_cast<std::uint8_t*>(k_base_map.data());
+        SiteCount* counts = cj.counts.data();
+
+        const std::size_t limit = (aln_len / 4) * 4;
+
 #if __has_include(<omp.h>)
-        // 在列维度并行：每个迭代 i 只操作 cj.counts[i]，因此不存在写冲突。
+        // 使用 parallel for simd，允许 OpenMP 分配线程并启用向量化
         #pragma omp parallel for schedule(static) num_threads(thread)
 #endif
-        for (std::size_t i = 0; i < aln_len; ++i) {
-            const std::uint8_t idx = mapBase(s[i]);
-            SiteCount& sc = cj.counts[i];
-            switch (idx) {
-                case 0: sc.a++; break;
-                case 1: sc.c++; break;
-                case 2: sc.g++; break;
-                case 3: sc.t++; break;
-                case 4: sc.u++; break;
-                case 5: sc.n++; break;
-                case 6: sc.dash++; break;
-                default: sc.n++; break;
-            }
+        for (std::size_t i = 0; i < limit; i += 4) {
+            // 轻量预取未来缓存行，距离可调（16~64 bytes => 16 positions 粗略）
+            __builtin_prefetch(&counts[i + 16]);
+
+            const std::uint8_t idx0 = base_map[data[i + 0]];
+            const std::uint8_t idx1 = base_map[data[i + 1]];
+            const std::uint8_t idx2 = base_map[data[i + 2]];
+            const std::uint8_t idx3 = base_map[data[i + 3]];
+
+            SiteCount& sc0 = counts[i + 0];
+            SiteCount& sc1 = counts[i + 1];
+            SiteCount& sc2 = counts[i + 2];
+            SiteCount& sc3 = counts[i + 3];
+
+            sc0.a += static_cast<std::uint32_t>(idx0 == 0);
+            sc0.c += static_cast<std::uint32_t>(idx0 == 1);
+            sc0.g += static_cast<std::uint32_t>(idx0 == 2);
+            sc0.t += static_cast<std::uint32_t>(idx0 == 3);
+            sc0.u += static_cast<std::uint32_t>(idx0 == 4);
+            sc0.n += static_cast<std::uint32_t>(idx0 == 5);
+            sc0.dash += static_cast<std::uint32_t>(idx0 == 6);
+
+            sc1.a += static_cast<std::uint32_t>(idx1 == 0);
+            sc1.c += static_cast<std::uint32_t>(idx1 == 1);
+            sc1.g += static_cast<std::uint32_t>(idx1 == 2);
+            sc1.t += static_cast<std::uint32_t>(idx1 == 3);
+            sc1.u += static_cast<std::uint32_t>(idx1 == 4);
+            sc1.n += static_cast<std::uint32_t>(idx1 == 5);
+            sc1.dash += static_cast<std::uint32_t>(idx1 == 6);
+
+            sc2.a += static_cast<std::uint32_t>(idx2 == 0);
+            sc2.c += static_cast<std::uint32_t>(idx2 == 1);
+            sc2.g += static_cast<std::uint32_t>(idx2 == 2);
+            sc2.t += static_cast<std::uint32_t>(idx2 == 3);
+            sc2.u += static_cast<std::uint32_t>(idx2 == 4);
+            sc2.n += static_cast<std::uint32_t>(idx2 == 5);
+            sc2.dash += static_cast<std::uint32_t>(idx2 == 6);
+
+            sc3.a += static_cast<std::uint32_t>(idx3 == 0);
+            sc3.c += static_cast<std::uint32_t>(idx3 == 1);
+            sc3.g += static_cast<std::uint32_t>(idx3 == 2);
+            sc3.t += static_cast<std::uint32_t>(idx3 == 3);
+            sc3.u += static_cast<std::uint32_t>(idx3 == 4);
+            sc3.n += static_cast<std::uint32_t>(idx3 == 5);
+            sc3.dash += static_cast<std::uint32_t>(idx3 == 6);
+        }
+
+#if __has_include(<omp.h>)
+        #pragma omp parallel for schedule(static) num_threads(thread)
+#endif
+        for (std::size_t i = limit; i < aln_len; ++i) {
+            const std::uint8_t idx = base_map[data[i]];
+            SiteCount& sc = counts[i];
+            sc.a += static_cast<std::uint32_t>(idx == 0);
+            sc.c += static_cast<std::uint32_t>(idx == 1);
+            sc.g += static_cast<std::uint32_t>(idx == 2);
+            sc.t += static_cast<std::uint32_t>(idx == 3);
+            sc.u += static_cast<std::uint32_t>(idx == 4);
+            sc.n += static_cast<std::uint32_t>(idx == 5);
+            sc.dash += static_cast<std::uint32_t>(idx == 6);
         }
     }
 
