@@ -35,9 +35,10 @@ add_executable(halign4
         src/utils/preprocess.cpp
         src/utils/seq_io.cpp
         src/utils/cmd.cpp
-        src/consensus/selector.cpp
         src/utils/file_io.cpp
+        src/consensus/selector.cpp
         src/consensus/consensus.cpp
+        src/cluster/cluster.cpp
 )
 
 find_package(CURL)
