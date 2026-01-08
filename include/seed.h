@@ -18,12 +18,6 @@
 // - 你后续可能支持多种 seed（minimizer 及各种变体，例如 syncmer/strobemer）
 // - 同时希望在不同阶段选择不同存储：只存 hash 或存 hash+位置
 // - 这里仅提供“最抽象”的接口与工具（traits/比较器），不提供任何具体实现。
-//
-// 使用方式：
-// 1) 你实现自己的 seed 类型，例如：
-//    struct MySeed : minimizer::SeedBase<MySeed> { ... }           // hash-only
-//    struct MySeedHit : minimizer::SeedHitBase<MySeedHit> { ... }  // hash+位置
-// 2) 上层算法只使用 minimizer::hash_value()/get_pos() 等 free-function
 // ================================================================
 using hash_t = std::uint64_t;
 namespace seed
@@ -48,19 +42,6 @@ namespace seed
         }
     }
 
-
-    // ------------------------------------------------------------
-    // CRTP 基类：hash-only seed
-    // ------------------------------------------------------------
-
-    template <typename Derived>
-    struct SeedBase
-    {
-        constexpr hash_t hash() const noexcept { return static_cast<const Derived&>(*this).hash(); }
-
-        friend constexpr bool operator<(const SeedBase& a, const SeedBase& b) noexcept { return a.hash() < b.hash(); }
-        friend constexpr bool operator==(const SeedBase& a, const SeedBase& b) noexcept { return a.hash() == b.hash(); }
-    };
 
     // ------------------------------------------------------------
     // CRTP 基类：hash+位置 seed（hit）
@@ -154,18 +135,6 @@ namespace seed
 namespace minimizer
 {
 
-    // ------------------------- hash-only minimizer -------------------------
-    // 用于相似度估计（Jaccard/containment），最省内存。
-    struct MinimizerHash : public seed::SeedBase<MinimizerHash>
-    {
-        hash_t h{0};
-
-        constexpr MinimizerHash() = default;
-        constexpr explicit MinimizerHash(hash_t hh) : h(hh) {}
-
-        constexpr hash_t hash() const noexcept { return h; }
-    };
-    using MinimizerHashes = std::vector<MinimizerHash>;
 
     // ------------------------- minimizer hit（带位置） -------------------------
     // 用于 chaining/定位：需要知道落在哪条序列(rid)、什么位置(pos)、方向(strand)以及覆盖长度(span)。
@@ -242,12 +211,12 @@ namespace minimizer
     };
 
     static_assert(sizeof(MinimizerHit) == 16, "MinimizerHit should be 16 bytes when packed as (x,y)");
-
+    using MinimizerHits = std::vector<MinimizerHit>;
 
     // =====================================================================
     // extractMinimizerHash
     // ---------------------------------------------------------------------
-    // 从一条输入序列中提取 minimizer 的“hash-only”列表（用于相似度估计/聚类）。
+    // 从一条输入序列中提取 minimizer hit 列表（hash+位置）。
     //
     // 参数：
     //   seq       : 输入序列
@@ -256,14 +225,14 @@ namespace minimizer
     //   is_forward: true 表示正向；false 表示反向互补后再提取
     //
     // 返回：
-    //   minimizer hash 列表（按扫描顺序）。
+    //   minimizer hit 列表（按扫描顺序）。
     //
     // 注意：这里只提供声明；实现请放到对应的 .cpp 文件中。
     // =====================================================================
-    MinimizerHashes extractMinimizerHash(const std::string& seq,
-                                                    std::size_t k,
-                                                    std::size_t w,
-                                                    bool is_forward);
+    MinimizerHits extractMinimizerHash(const std::string& seq,
+                                       std::size_t k,
+                                       std::size_t w,
+                                       bool is_forward);
 
 
     // =============================================================

@@ -25,10 +25,12 @@ add_executable(halign4
         src/utils/seq_io.cpp
         src/utils/cmd.cpp
         src/utils/file_io.cpp
+        src/utils/MurmurHash3.cpp
         src/consensus/selector.cpp
         src/consensus/consensus.cpp
         src/cluster/cluster.cpp
         src/seed/minimizer.cpp
+        src/mash/mash.cpp
 )
 
 find_package(CURL)

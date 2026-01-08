@@ -27,9 +27,11 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/utils/seq_io.cpp"
         "${HALIGN4_ROOT}/src/utils/cmd.cpp"
         "${HALIGN4_ROOT}/src/utils/file_io.cpp"
+        "${HALIGN4_ROOT}/src/utils/MurmurHash3.cpp"
         "${HALIGN4_ROOT}/src/consensus/selector.cpp"
         "${HALIGN4_ROOT}/src/consensus/consensus.cpp"
         "${HALIGN4_ROOT}/src/seed/minimizer.cpp"
+        "${HALIGN4_ROOT}/src/mash/mash.cpp"
 )
 
 target_include_directories(halign4_test_support PUBLIC
@@ -82,6 +84,9 @@ add_executable(halign4_tests
         "${CMAKE_CURRENT_LIST_DIR}/doctest_main.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_consensus.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_read_fasta.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_minimizer.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_mash.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_mash_perf.cpp"
 )
 
 target_link_libraries(halign4_tests PRIVATE halign4_test_support)
@@ -120,3 +125,9 @@ add_test(NAME consensus
 add_test(NAME read_fasta
         COMMAND halign4_tests --test-suite=read_fasta)
 set_tests_properties(consensus PROPERTIES TIMEOUT 0)
+
+add_test(NAME minimizer
+        COMMAND halign4_tests --test-suite=minimizer)
+
+add_test(NAME mash
+        COMMAND halign4_tests --test-suite=mash)

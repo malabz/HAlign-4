@@ -58,6 +58,7 @@ namespace minimizer
         }
 
         std::uint64_t minHash() const noexcept { return front().h; }
+        std::uint32_t minPos() const noexcept { return front().pos; }
 
     private:
         std::vector<Cand> buf_;
@@ -92,25 +93,20 @@ namespace minimizer
 
 
     // =============================================================
-    // 目标：从单条序列中提取 minimizer（hash-only）。
-    //
-    // 设计思路（尽量贴近 minimap2 的 sketch 过程）：
-    // 1) rolling 2-bit 编码生成每个位置的 k-mer（O(n)）。
-    // 2) 对 k-mer 编码做 64-bit mixer（splitmix64）。
-    // 3) winnowing：每个窗口(w 个 k-mer)取 hash 最小者作为 minimizer。
-    // 4) 相邻窗口去重。
+    // 目标：从单条序列中提取 minimizer（带位置 hit）。
     // =============================================================
-    MinimizerHashes extractMinimizerHash(const std::string& seq,
-                                         std::size_t k,
-                                         std::size_t w,
-                                         bool is_forward)
+    MinimizerHits extractMinimizerHash(const std::string& seq,
+                                       std::size_t k,
+                                       std::size_t w,
+                                       bool is_forward)
     {
-        MinimizerHashes out;
+        MinimizerHits out;
 
         const std::uint32_t n = static_cast<std::uint32_t>(seq.size());
         if (k == 0 || w == 0 || n < k) return out;
         if (k > 31) return out;
         if (w >= 256) return out;
+        if (k >= 256) return out; // span 只有 8bit
 
         const auto& nt4_table_ref = minimizer::nt4_table;
 
@@ -129,50 +125,45 @@ namespace minimizer
 
         RingMinQueue q(win);
 
-        std::uint64_t last_out = 0;
+        Cand last_out{0, 0};
         bool has_last = false;
 
         for (std::uint32_t i = 0; i < n; ++i) {
-            // 1) 查表将字符转为 2-bit（非法字符 -> 4）
             const std::uint8_t c = nt4_table_ref[static_cast<std::uint8_t>(seq[i])];
             if (c >= 4) {
-                // 非法字符会打断 k-mer：清空滚动状态与窗口结构
                 fwd = rev = 0;
                 valid = 0;
                 q.clear();
+                has_last = false;
                 continue;
             }
 
-            // 2) rolling 更新 fwd/rev
             fwd = ((fwd << 2) | c) & mask;
             rev = (rev >> 2) | (std::uint64_t(3U ^ c) << shift);
 
-            // 3) 只有连续合法字符达到 k 后，才能形成 k-mer
             if (valid < k) ++valid;
             if (valid < k) continue;
 
             const std::uint32_t pos = i + 1 - static_cast<std::uint32_t>(k);
 
-            // 4) 根据 is_forward 选择正向或反向互补编码
             const std::uint64_t code = is_forward ? fwd : rev;
-            const std::uint64_t h = splitmix64(code);
+            const std::uint64_t h64 = splitmix64(code);
+            const std::uint64_t h56 = (h64 >> 8); // 取高 56bit，留出低 8bit 给 span
 
-            // 5) 放入窗口最小值结构
-            q.push(h, pos);
+            q.push(h56, pos);
 
-            // 6) 窗口满 win 个 k-mer 后才输出 minimizer
             if (pos + 1 < win) continue;
             const std::uint32_t win_start = pos + 1 - win;
-
-            // 7) 弹出过期元素
             q.popExpired(win_start);
 
-            // 8) 输出窗口最小值，并做相邻去重
             if (!q.empty()) {
-                const std::uint64_t mh = q.minHash();
-                if (!has_last || mh != last_out) {
-                    out.push_back(MinimizerHash{mh});
-                    last_out = mh;
+                const Cand cur{q.minHash(), q.minPos()};
+                if (!has_last || cur.h != last_out.h || cur.pos != last_out.pos) {
+                    out.emplace_back(cur.h, cur.pos,
+                                     /*rid*/ 0,
+                                     /*strand*/ !is_forward,
+                                     static_cast<std::uint8_t>(k));
+                    last_out = cur;
                     has_last = true;
                 }
             }
