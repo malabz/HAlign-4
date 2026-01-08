@@ -1,47 +1,28 @@
 #include "hash.h"
-#include "MurmurHash3.h"
-#include <cstring>
-#include <cstdint>
 
-hash_t getHash(const char * seq, int length, std::uint32_t seed)
-{
-#ifdef ARCH_32
-    // 32-bit: mimic Mash approach by concatenating two 32-bit hashes
-    std::uint8_t out8[8];
-    MurmurHash3_x86_32(seq, length > 16 ? 16 : length, seed, out8);
-    MurmurHash3_x86_32(seq + (length > 16 ? 16 : length), length > 16 ? (length - 16) : 0, seed, out8 + 4);
-    hash_t h = 0;
-    std::memcpy(&h, out8, 8);
-    return h;
+
+// 将 code2bit 固化成“大端字节序”输入（跨平台一致）
+// 在 little-endian 机器上做一次 bswap，使得内存字节序等价于原值的 big-endian bytes。
+static inline std::uint64_t to_be64(std::uint64_t x) noexcept {
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+    return __builtin_bswap64(x);
 #else
-    std::uint8_t out16[16];
-    MurmurHash3_x64_128(seq, length, seed, out16);
-    hash_t h = 0;
-    std::memcpy(&h, out16, 8);
-    return h;
+    return x;
 #endif
+}
+
+hash_t getHash(const char* seq, int length, std::uint32_t seed)
+{
+    // XXH3_64bits_withSeed 的 seed 类型是 XXH64_hash_t（64-bit），直接扩展即可
+    return static_cast<hash_t>(
+        XXH3_64bits_withSeed(seq, static_cast<size_t>(length), static_cast<XXH64_hash_t>(seed))
+    );
 }
 
 hash_t getHash2bit(std::uint64_t code2bit, std::uint32_t seed)
 {
-    // 固化输入字节序（big-endian），保证跨平台一致
-    std::uint8_t key8[8];
-    for (int i = 0; i < 8; ++i)
-        key8[i] = static_cast<std::uint8_t>((code2bit >> (56 - 8 * i)) & 0xFF);
-
-#ifdef ARCH_32
-    std::uint8_t out8[8];
-    // 低 32 + 高 32 拼接
-    MurmurHash3_x86_32(key8, 8, seed, out8);
-    MurmurHash3_x86_32(key8, 8, seed, out8 + 4);
-    hash_t h = 0;
-    std::memcpy(&h, out8, 8);
-    return h;
-#else
-    std::uint8_t out16[16];
-    MurmurHash3_x64_128(key8, 8, seed, out16);
-    hash_t h = 0;
-    std::memcpy(&h, out16, 8);
-    return h;
-#endif
+    const std::uint64_t be = to_be64(code2bit);
+    return static_cast<hash_t>(
+        XXH3_64bits_withSeed(&be, sizeof(be), static_cast<XXH64_hash_t>(seed))
+    );
 }

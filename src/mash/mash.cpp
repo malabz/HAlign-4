@@ -69,7 +69,7 @@ namespace mash
             if (valid < k) continue;
 
             const std::uint64_t code = noncanonical ? fwd : std::min(fwd, rev);
-            const hash_t h = getHash2bit(code, static_cast<std::uint32_t>(seed));
+            const hash_t h =  getHash2bit(code, static_cast<std::uint32_t>(seed));
 
             if (!seen.insert(h).second) continue;
 
