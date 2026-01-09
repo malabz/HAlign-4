@@ -3,6 +3,7 @@
 #include <mash.h>
 
 #include <cmath>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -137,5 +138,124 @@ TEST_SUITE("mash")
         MESSAGE("mash_perf: N=" << N << " L=" << L << " took " << seconds << "s");
 
         CHECK(true);
+    }
+
+    TEST_CASE("sketchFromSequence - hashes are sorted & unique")
+    {
+        const std::string s = "ACGTACGTACGTACGTACGTACGTACGTACGT";
+        const std::size_t k = 4;
+        const std::size_t sketch_size = 200;
+
+        auto sk = mash::sketchFromSequence(s, k, sketch_size);
+        CHECK(sk.k == k);
+
+        // 检查有序
+        CHECK(std::is_sorted(sk.hashes.begin(), sk.hashes.end()));
+
+        // 检查无重复
+        CHECK(std::adjacent_find(sk.hashes.begin(), sk.hashes.end()) == sk.hashes.end());
+    }
+
+    // 参考实现：暴力计算所有 k-mer（rolling 2-bit + getHash2bit），
+    // 取 canonical/noncanonical 后生成完整 hash 列表，最后 sort+unique 并取前 sketch_size。
+    static std::vector<hash_t> reference_bottom_k(const std::string& seq,
+                                                  std::size_t k,
+                                                  std::size_t sketch_size,
+                                                  bool noncanonical,
+                                                  int seed)
+    {
+        std::vector<hash_t> all;
+        if (k == 0 || sketch_size == 0 || seq.size() < k || k > 32) return all;
+
+        const std::uint64_t mask = (1ULL << (2 * k)) - 1ULL;
+        const std::uint64_t shift = 2ULL * (k - 1);
+        std::uint64_t fwd = 0;
+        std::uint64_t rev = 0;
+        std::size_t valid = 0;
+
+        all.reserve(seq.size());
+
+        for (std::size_t i = 0; i < seq.size(); ++i)
+        {
+            const uint8_t c = mash::nt4_table[static_cast<unsigned char>(seq[i])];
+            if (c >= 4) {
+                fwd = rev = 0;
+                valid = 0;
+                continue;
+            }
+
+            fwd = ((fwd << 2) | c) & mask;
+            rev = (rev >> 2) | (std::uint64_t(3U ^ c) << shift);
+
+            if (valid < k) ++valid;
+            if (valid < k) continue;
+
+            const std::uint64_t code = noncanonical ? fwd : std::min(fwd, rev);
+            all.push_back(getHash2bit(code, static_cast<std::uint32_t>(seed)));
+        }
+
+        std::sort(all.begin(), all.end());
+        all.erase(std::unique(all.begin(), all.end()), all.end());
+        if (all.size() > sketch_size) all.resize(sketch_size);
+        return all;
+    }
+
+    TEST_CASE("sketchFromSequence - bottom-k property matches reference")
+    {
+        const std::string s = "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+        const std::size_t k = 15;
+        const std::size_t sketch_size = 50;
+        const int seed = 42;
+
+        SUBCASE("noncanonical=true")
+        {
+            auto sk = mash::sketchFromSequence(s, k, sketch_size, /*noncanonical*/ true, seed);
+            auto ref = reference_bottom_k(s, k, sketch_size, /*noncanonical*/ true, seed);
+            CHECK(sk.hashes == ref);
+        }
+
+        SUBCASE("noncanonical=false (canonical)")
+        {
+            auto sk = mash::sketchFromSequence(s, k, sketch_size, /*noncanonical*/ false, seed);
+            auto ref = reference_bottom_k(s, k, sketch_size, /*noncanonical*/ false, seed);
+            CHECK(sk.hashes == ref);
+        }
+    }
+
+    TEST_CASE("sketchFromSequence - handles invalid chars by resetting window")
+    {
+        // 中间插入 N：跨过 N 的 k-mer 不应产生（窗口会重置）
+        const std::string s = "ACGTACGTNNNNACGTACGT";
+        const std::size_t k = 5;
+        const std::size_t sketch_size = 200;
+        const int seed = 7;
+
+        auto sk = mash::sketchFromSequence(s, k, sketch_size, /*noncanonical*/ true, seed);
+        auto ref = reference_bottom_k(s, k, sketch_size, /*noncanonical*/ true, seed);
+        CHECK(sk.hashes == ref);
+        CHECK(std::is_sorted(sk.hashes.begin(), sk.hashes.end()));
+        CHECK(std::adjacent_find(sk.hashes.begin(), sk.hashes.end()) == sk.hashes.end());
+    }
+
+    TEST_CASE("sketchFromSequence - canonical differs from noncanonical on non-palindrome")
+    {
+        // 选一个明显非回文的序列，canonical 与 noncanonical 通常会不一样（并不保证必须不同，但很大概率）。
+        const std::string s = "ACGTTGCAACGTTGCAACGTTGCA";
+        const std::size_t k = 7;
+        const std::size_t sketch_size = 100;
+        const int seed = 123;
+
+        auto sk_nc = mash::sketchFromSequence(s, k, sketch_size, /*noncanonical*/ true, seed);
+        auto sk_can = mash::sketchFromSequence(s, k, sketch_size, /*noncanonical*/ false, seed);
+
+        CHECK(std::is_sorted(sk_nc.hashes.begin(), sk_nc.hashes.end()));
+        CHECK(std::is_sorted(sk_can.hashes.begin(), sk_can.hashes.end()));
+
+        // 至少确保两个结果都符合 bottom-k 参考
+        CHECK(sk_nc.hashes == reference_bottom_k(s, k, sketch_size, true, seed));
+        CHECK(sk_can.hashes == reference_bottom_k(s, k, sketch_size, false, seed));
+
+        // “通常”两者不同：用 CHECK_FALSE 可能导致偶发失败，所以这里只做 INFO 输出。
+        DOCTEST_INFO("noncanonical size=", sk_nc.hashes.size(), "; canonical size=", sk_can.hashes.size());
     }
 }

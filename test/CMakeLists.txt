@@ -27,7 +27,6 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/utils/seq_io.cpp"
         "${HALIGN4_ROOT}/src/utils/cmd.cpp"
         "${HALIGN4_ROOT}/src/utils/file_io.cpp"
-        "${HALIGN4_ROOT}/src/utils/MurmurHash3.cpp"
         "${HALIGN4_ROOT}/src/utils/xxhash.c"
         "${HALIGN4_ROOT}/src/utils/hash.cpp"
         "${HALIGN4_ROOT}/src/consensus/selector.cpp"

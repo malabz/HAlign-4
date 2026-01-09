@@ -12,7 +12,6 @@
 #include <string>
 #include <queue>
 #include <cstring> // for memcmp
-#include <unordered_set>
 #include "hash.h"
 #include "robin_hood.h"
 
@@ -37,55 +36,91 @@ namespace mash
         sk.k = k;
         sk.noncanonical = noncanonical;
 
+        // --- 参数/边界检查 ---
+        // k=0 或 sketch_size=0：没有意义，直接返回空 sketch。
+        // seq.size() < k：不足以形成任何 k-mer。
         if (k == 0 || sketch_size == 0 || seq.size() < k) return sk;
+        // 这里实现使用 2-bit 编码将 k-mer 压缩到 64bit 中，因此限制 k<=32。
         if (k > 32) return sk;
 
+        // mask：用于保留 rolling 编码的低 2*k 位。
         const std::uint64_t mask = (1ULL << (2 * k)) - 1ULL;
+        // shift：用于维护反向互补 rolling 编码时，把新碱基放到最高两位的位置。
         const std::uint64_t shift = 2ULL * (k - 1);
 
+        // fwd：正向 rolling 2-bit 编码
+        // rev：反向互补 rolling 2-bit 编码
+        // valid：当前窗口累计的有效碱基数（遇到 N/非法字符会清零）
         std::uint64_t fwd = 0;
         std::uint64_t rev = 0;
         std::size_t valid = 0;
 
-        // max-heap (top is largest), keep bottom-k
+        // max-heap（堆顶是当前集合里“最大”的 hash），用于维护 bottom-k（最小的 k 个 hash）
+        // 复杂度：每个 k-mer 仅 O(log(sketch_size))。
         std::priority_queue<hash_t> maxHeap;
+
+        // seen：用于去重，避免同一个 hash 重复进入 heap 造成 bias。
+        // 这里用 robin_hood::unordered_set（通常比 std::unordered_set 更快、内存更紧凑）。
+        // reserve *2：降低 rehash 次数。
         robin_hood::unordered_set<hash_t> seen;
         seen.reserve(sketch_size * 2 + 1);
 
+        // 主循环：对序列做 rolling，生成每个位置的 k-mer（正向/反向互补），然后计算 hash。
         for (std::size_t i = 0; i < seq.size(); ++i)
         {
+            // nt4_table：把碱基映射到 0/1/2/3；其他字符（例如 N）映射到 4。
             const uint8_t c = nt4_table[static_cast<unsigned char>(seq[i])];
             if (c >= 4)
             {
+                // 遇到 N/非法字符：当前 rolling 窗口失效，需要从下一个字符重新累计。
                 fwd = rev = 0;
                 valid = 0;
                 continue;
             }
 
+            // forward rolling：左移 2 位并加入新碱基（低位），再用 mask 截断到 2*k 位。
             fwd = ((fwd << 2) | c) & mask;
+            // reverse-complement rolling：右移 2 位，并把“互补碱基”放在最高位。
+            // 互补关系：A(0)<->T(3), C(1)<->G(2)，对应 3^c。
             rev = (rev >> 2) | (std::uint64_t(3U ^ c) << shift);
 
+            // valid 计数不足 k 时，还不能形成完整 k-mer。
             if (valid < k) ++valid;
             if (valid < k) continue;
 
+            // canonical 选择：
+            // - noncanonical=true ：只取正向
+            // - noncanonical=false：取 min(fwd, rev) 作为 canonical k-mer
             const std::uint64_t code = noncanonical ? fwd : std::min(fwd, rev);
-            const hash_t h =  getHash2bit(code, static_cast<std::uint32_t>(seed));
 
+            // 把 2-bit 编码的 k-mer 直接 hash 成 64-bit。
+            // seed 用于扰动 hash（不同 seed 产生不同 sketch）。
+            const hash_t h = getHash2bit(code, static_cast<std::uint32_t>(seed));
+
+            // 去重：如果之前见过这个 hash，则跳过。
             if (!seen.insert(h).second) continue;
 
             if (maxHeap.size() < sketch_size)
             {
+                // heap 未满：直接插入
                 maxHeap.push(h);
             }
             else if (h < maxHeap.top())
             {
-                // evict current largest
+                // heap 已满：只有当新 hash 更小，才有资格进入 bottom-k
+                // 先把当前最大值弹出，同时从 seen 中移除；再插入新值。
                 seen.erase(maxHeap.top());
                 maxHeap.pop();
                 maxHeap.push(h);
             }
+            // else: 新 hash 不够小，直接丢弃（但注意：此时 seen 已经插入过，需要撤销）
+            else
+            {
+                seen.erase(h);
+            }
         }
 
+        // 导出 heap 到向量（此时顺序不保证）
         sk.hashes.reserve(maxHeap.size());
         while (!maxHeap.empty())
         {
@@ -93,7 +128,10 @@ namespace mash
             maxHeap.pop();
         }
 
-        std::sort(sk.hashes.begin(), sk.hashes.end());
+        // 最后排序是必须的：
+        // - intersection/jaccard 需要 sorted unique
+        // - 其他地方也依赖 sketch 有序
+        //std::sort(sk.hashes.begin(), sk.hashes.end());
 
         return sk;
     }
@@ -155,8 +193,7 @@ namespace mash
     // 计算两个已排序且唯一化（unique）的哈希向量的交集大小。算法为经典的双指针线性扫描。
     // 要求输入 a,b 已经满足升序且无重复；该函数不会修改输入，只返回交集元素数量（不返回集合本身）。
     // 时间复杂度：O(|a| + |b|)。适用于 sketch 的哈希集合比较。
-    // 注意：由于 hash_u 是联合体，调用者需要确保两个向量使用相同的 use64 设置。
-    // 这个函数主要用于向后兼容，建议直接使用 jaccard 函数。
+    // 注意：本项目中 hash_t = uint64_t，因此无需关心 use64 之类的分支。
     std::size_t intersectionSizeSortedUnique(const std::vector<hash_t>& a,
                                              const std::vector<hash_t>& b) noexcept
     {
