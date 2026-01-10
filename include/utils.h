@@ -114,6 +114,7 @@ namespace seq_io
         std::string seq;    // 序列
         std::string qual;   // FASTQ 质量字符串（可选），实现中需要访问该字段
     };
+    using SeqRecords     = std::vector<seq_io::SeqRecord>;
 
     // makeCleanTable / clean_table:
     // - 用于把任意字符映射到一个受限的碱基字符集合（'A','C','G','T','U','N','-'），

@@ -29,7 +29,7 @@ add_executable(halign4
         src/mash/xxhash.c
         src/consensus/selector.cpp
         src/consensus/consensus.cpp
-        src/cluster/cluster.cpp
+        src/align/ref_aligner.cpp
         src/seed/minimizer.cpp
         src/mash/mash.cpp
 )

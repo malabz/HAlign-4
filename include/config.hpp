@@ -85,6 +85,147 @@ typedef uint32_t uint_t;
 #define I_MIN	INT32_MIN
 #endif
 
+struct Options {
+	// 输入/输出与工作目录
+	std::string input;          // -i：输入序列文件（路径或压缩文件）
+	std::string output;         // -o：最终输出文件（写入位置）
+	std::string workdir;        // -w：工作目录，所有中间文件（data/raw, data/clean 等）放在该目录下
+
+	// 可选参数：中心序列、MSA 命令模板
+	std::string center_path;    // -c：可选，指定中心序列文件路径，若指定则绕过自动选择
+	std::string msa_cmd;        // -p：用于对共识序列做 MSA 的命令模板（可以包含 {input} {output} {thread} 占位符）
+
+	// 并行与算法参数
+	int threads = [](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }(); // -t：线程数，默认为 CPU 核心数
+	int kmer_size = 15;         // --kmer-size：用于归类/聚类的 k-mer 大小（后续步骤使用）
+	int kmer_window = 10;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
+	int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
+	int sketch_size = 2000;     // --sketch-size：用于 sketch 的大小（默认 2000）
+
+	// keep length 相关开关：
+	// - keep_first_length：仅保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
+	// - keep_all_length  ：保持“所有中心序列”的长度不变，适用于后续流程严格依赖原始长度坐标系（代价通常更高）。
+	bool keep_first_length = false; // --keep-first-length
+	bool keep_all_length = false;   // --keep-all-length
+};
+
+
+
+// setupCli：定义 CLI 参数并绑定到 Options
+// 注释说明：
+// - 使用 CLI11 库实现参数解析，支持短参数/长参数与基本校验（例如 ExistingFile）
+// - 对于像 -p/--msa-cmd 这类可能是可执行名（而非完整路径）的参数，ExistingFile 会拒绝仅命令名的情况；
+//   如果希望允许命令名（在 PATH 中解析），可以去掉 check(CLI::ExistingFile) 或改为用户层面的更宽容判断。
+static void setupCli(CLI::App& app, Options& opt) {
+    app.description("HAlign4 / MSA tool");
+
+   // 必须参数（同时支持短参数和长参数）
+    app.add_option("-i,--input", opt.input, "Input sequences (file path)")
+        ->required()
+        ->check(CLI::ExistingFile);
+
+    app.add_option("-o,--output", opt.output, "Output result (file path)")
+        ->required();
+
+    app.add_option("-w,--workdir", opt.workdir, "Working directory")
+        ->required();
+
+    // 可选参数（增加长参数形式）
+    app.add_option("-c,--center-path", opt.center_path, "Center sequence path")
+        ->check(CLI::ExistingFile);
+
+    // 如果 -p 是“可执行文件路径”，ExistingFile 通常也能用；
+    // 若你希望允许仅命令名（在 PATH 中），这里就不要 check
+    app.add_option("-p,--msa-cmd", opt.msa_cmd, "High-quality method command path")
+        ->check(CLI::ExistingFile);
+
+    app.add_option("-t,--thread", opt.threads, "Number of threads")
+        ->default_val([](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }())
+        ->check(CLI::Range(1, 100000));
+
+    app.add_option("--kmer-size", opt.kmer_size, "K-mer size")
+        ->default_val(15)
+        ->check(CLI::Range(4, 31));
+
+    app.add_option("--kmer-window", opt.kmer_window, "Minimizer window size (w, in number of k-mers)")
+        ->default_val(10)
+        ->check(CLI::Range(1, 1000000));
+
+    app.add_option("--cons-n", opt.cons_n, "Number of sequences for consensus")
+        ->default_val(1000)
+        ->check(CLI::Range(1, 1000000));
+
+    // 新增 sketch-size 参数
+    app.add_option("--sketch-size", opt.sketch_size, "Sketch size")
+        ->default_val(2000)
+        ->check(CLI::Range(1, 10000000));
+
+    // keep length：拆分为两个互斥开关（更精确地表达需求）
+    app.add_flag("--keep-first-length", opt.keep_first_length,
+        "Keep only the first/center sequence length unchanged");
+    app.add_flag("--keep-all-length", opt.keep_all_length,
+        "Keep all center sequences length unchanged");
+}
+
+// logParsedOptions：把解析后的参数以漂亮的表格形式输出到日志
+// 说明：此处的输出用于帮助用户和调试（打印被截断的长字符串、boolean 友好显示等），
+// 不影响程序行为。若程序在无头环境运行（服务/容器），日志也便于审计和复现运行参数。
+static void logParsedOptions(const Options& opt) {
+    // Helper to convert values and truncate long strings for tidy display
+    auto toString = [](const std::string& s, size_t maxLen) -> std::string {
+        if (s.empty()) return "(empty)";
+        if (s.size() <= maxLen) return s;
+        return s.substr(0, maxLen - 3) + "...";
+    };
+
+    auto boolToStr = [](bool b) { return b ? "true" : "false"; };
+
+    const size_t keyW = 14;
+    const size_t valW = 60;
+    const size_t innerW = keyW + 3 + valW; // "key : value"
+
+    std::vector<std::pair<std::string, std::string>> rows = {
+        {"input", toString(opt.input, valW)},
+        {"output", toString(opt.output, valW)},
+        {"workdir", toString(opt.workdir, valW)},
+        {"center_path", toString(opt.center_path, valW)},
+        {"msa_cmd", toString(opt.msa_cmd, valW)},
+        {"threads", std::to_string(opt.threads)},
+        {"kmer_size", std::to_string(opt.kmer_size)},
+        {"kmer_window", std::to_string(opt.kmer_window)},
+        {"cons_n", std::to_string(opt.cons_n)},
+        {"sketch_size", std::to_string(opt.sketch_size)},
+        {"keep_first_length", boolToStr(opt.keep_first_length)},
+        {"keep_all_length", boolToStr(opt.keep_all_length)}
+    };
+
+    std::ostringstream oss;
+
+    // top border
+    oss << "+" << std::string(innerW, '-') << "+\n";
+
+    // title centered
+    const std::string title = " Parsed options ";
+    size_t paddingLeft = 0;
+    if (innerW > title.size()) paddingLeft = (innerW - title.size()) / 2;
+    oss << "|" << std::string(paddingLeft, ' ') << title
+        << std::string(innerW - paddingLeft - title.size(), ' ') << "|\n";
+
+    // separator
+    oss << "+" << std::string(innerW, '-') << "+\n";
+
+    // rows
+    for (auto &kv : rows) {
+        oss << "| " << std::left << std::setw(keyW) << kv.first << " : "
+            << std::setw(valW) << kv.second << "|\n";
+    }
+
+    // bottom border
+    oss << "+" << std::string(innerW, '-') << "+";
+
+    spdlog::info("\n{}", oss.str());
+}
+
 // ------------------------------------------------------------------
 // CLI11 自定义格式器（美化选项输出）
 // 说明：

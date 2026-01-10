@@ -74,7 +74,7 @@ TEST_SUITE("minimizer" * doctest::skip(shouldSkipPerf()))
         // 预热：避免第一次运行的 cache/branch predictor 影响过大
         std::uint64_t checksum = 0;
         for (const auto& s : seqs) {
-            auto mz = minimizer::extractMinimizerHash(s, k, w, /*is_forward*/ true);
+            auto mz = minimizer::extractMinimizerHash(s, k, w, false);
             checksum += static_cast<std::uint64_t>(mz.size());
             if (!mz.empty()) checksum ^= mz.front().hash();
         }
@@ -84,7 +84,7 @@ TEST_SUITE("minimizer" * doctest::skip(shouldSkipPerf()))
         std::uint64_t total_minimizers = 0;
         for (std::size_t r = 0; r < rounds; ++r) {
             for (const auto& s : seqs) {
-                auto mz = minimizer::extractMinimizerHash(s, k, w, /*is_forward*/ true);
+                auto mz = minimizer::extractMinimizerHash(s, k, w, false);
                 total_minimizers += static_cast<std::uint64_t>(mz.size());
                 if (!mz.empty()) checksum ^= mz.back().hash();
             }

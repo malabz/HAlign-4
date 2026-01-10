@@ -98,7 +98,7 @@ namespace minimizer
     MinimizerHits extractMinimizerHash(const std::string& seq,
                                        std::size_t k,
                                        std::size_t w,
-                                       bool is_forward)
+                                       bool non_canonical)
     {
         MinimizerHits out;
 
@@ -146,7 +146,7 @@ namespace minimizer
 
             const std::uint32_t pos = i + 1 - static_cast<std::uint32_t>(k);
 
-            const std::uint64_t code = is_forward ? fwd : rev;
+            const std::uint64_t code = non_canonical ? fwd : std::min(fwd, rev);
             const std::uint64_t h64 = splitmix64(code);
             const std::uint64_t h56 = (h64 >> 8); // 取高 56bit，留出低 8bit 给 span
 
@@ -161,7 +161,7 @@ namespace minimizer
                 if (!has_last || cur.h != last_out.h || cur.pos != last_out.pos) {
                     out.emplace_back(cur.h, cur.pos,
                                      /*rid*/ 0,
-                                     /*strand*/ !is_forward,
+                                     non_canonical ? true : (fwd <= rev),
                                      static_cast<std::uint8_t>(k));
                     last_out = cur;
                     has_last = true;

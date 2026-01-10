@@ -41,6 +41,7 @@ namespace mash
         std::size_t size() const noexcept { return hashes.size(); }
         bool empty() const noexcept { return hashes.empty(); }
     };
+    using Sketches = std::vector<Sketch>;
 
     // ------------------------------------------------------------
     // Construction

@@ -10,6 +10,7 @@
 #include <string>
 #include <cstddef>
 #include <algorithm>
+#include "hash.h"
 
 // ================================================================
 // 抽象 seed 接口（不绑定具体 minimizer/syncmer/strobemer 实现）
@@ -19,7 +20,6 @@
 // - 同时希望在不同阶段选择不同存储：只存 hash 或存 hash+位置
 // - 这里仅提供“最抽象”的接口与工具（traits/比较器），不提供任何具体实现。
 // ================================================================
-using hash_t = std::uint64_t;
 namespace seed
 {
     // ------------------------------------------------------------
@@ -222,7 +222,6 @@ namespace minimizer
     //   seq       : 输入序列
     //   k         : k-mer 大小
     //   w         : 窗口大小（以 k-mer 为单位）
-    //   is_forward: true 表示正向；false 表示反向互补后再提取
     //
     // 返回：
     //   minimizer hit 列表（按扫描顺序）。
@@ -232,7 +231,7 @@ namespace minimizer
     MinimizerHits extractMinimizerHash(const std::string& seq,
                                        std::size_t k,
                                        std::size_t w,
-                                       bool is_forward);
+                                       bool non_canonical);
 
 
     // =============================================================
