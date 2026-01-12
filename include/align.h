@@ -18,7 +18,10 @@ namespace align {
         public:
         // 初始化函数
         RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size = 21, int window_size = 10,
-                    int sketch_size = 2000, bool noncanonical = true, bool keep_first_length = false, bool keep_all_length = false);
+                    int sketch_size = 2000, bool noncanonical = true);
+
+        void alignQueryToRef(const FilePath& qry_fasta_path);;
+
 
         private:
         FilePath work_dir;

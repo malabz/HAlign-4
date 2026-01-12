@@ -193,14 +193,33 @@ namespace seq_io
     class FastaWriter
     {
     public:
+        // 说明：保持原有构造函数不变，默认启用约 8MiB 的内部缓冲。
+        // 当累计写入内容超过该阈值时才会触发一次真正的磁盘写入，从而减少 write() 系统调用次数。
         explicit FastaWriter(const FilePath& file_path, std::size_t line_width = 80);
 
+        // 可选高级构造：允许自定义缓冲阈值（字节）。
+        // - buffer_threshold_bytes = 0 表示禁用额外缓冲（每次 write() 直接写入 ofstream）。
+        FastaWriter(const FilePath& file_path, std::size_t line_width, std::size_t buffer_threshold_bytes);
+
         void write(const SeqRecord& rec);
+
+        // flush():
+        // - 把 FastaWriter 的内部缓冲区内容写入文件；
+        // - 然后调用底层 ofstream::flush()。
+        // 建议在写完所有记录后显式调用一次，或依赖析构函数自动 flush。
         void flush();
+
+        ~FastaWriter();
 
     private:
         std::ofstream out_;
         std::size_t line_width_{80};
+
+        // 内部累积缓冲区，达到阈值后批量写。
+        std::string buffer_;
+        std::size_t buffer_threshold_bytes_{8ULL * 1024ULL * 1024ULL}; // 默认 8MiB
+
+        void flushBuffer_();
 
         static void writeWrapped(std::ofstream& out, std::string_view s, std::size_t width);
     };

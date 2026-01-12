@@ -179,12 +179,41 @@ namespace seq_io
     // ------------------------- FastaWriter -------------------------
 
     FastaWriter::FastaWriter(const FilePath& file_path, std::size_t line_width)
-        : out_(file_path, std::ios::binary), line_width_(line_width)
+        : FastaWriter(file_path, line_width, 8ULL * 1024ULL * 1024ULL)
+    {}
+
+    FastaWriter::FastaWriter(const FilePath& file_path, std::size_t line_width, std::size_t buffer_threshold_bytes)
+        : out_(file_path, std::ios::binary),
+          line_width_(line_width == 0 ? 80 : line_width),
+          buffer_threshold_bytes_(buffer_threshold_bytes)
     {
         if (!out_) {
             throw makeIoError("failed to open output", file_path);
         }
-        if (line_width_ == 0) line_width_ = 80;
+
+        // 为了减少 buffer_ 动态扩容次数，提前 reserve 一些空间。
+        // - 若 threshold 为 0：禁用额外缓冲，不需要 reserve。
+        // - 若 threshold 为正：reserve 到 min(threshold, 8MiB)（默认 threshold 本身就是 8MiB）。
+        if (buffer_threshold_bytes_ > 0) {
+            buffer_.reserve(std::min<std::size_t>(buffer_threshold_bytes_, 8ULL * 1024ULL * 1024ULL));
+        }
+    }
+
+    FastaWriter::~FastaWriter()
+    {
+        // 析构时尽量 flush，但不要在析构中抛异常（避免 stack-unwinding 期间 terminate）。
+        try {
+            flush();
+        } catch (...) {
+            // best-effort
+        }
+    }
+
+    void FastaWriter::flushBuffer_()
+    {
+        if (buffer_.empty()) return;
+        out_.write(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
+        buffer_.clear();
     }
 
     void FastaWriter::writeWrapped(std::ofstream& out, std::string_view s, std::size_t width)
@@ -211,40 +240,54 @@ namespace seq_io
     {
         if (!out_) throw std::runtime_error("FastaWriter output stream is not ready");
 
-        // 构造并一次性写入 header
-        std::string header;
-        header.reserve(1 + rec.id.size() + (rec.desc.empty() ? 0 : 1 + rec.desc.size()) + 1);
-        header.push_back('>');
-        header.append(rec.id);
-        if (!rec.desc.empty()) {
-            header.push_back(' ');
-            header.append(rec.desc);
-        }
-        header.push_back('\n');
-        out_.write(header.data(), static_cast<std::streamsize>(header.size()));
-
-        // 构造带换行的序列缓冲区并一次性写出，减少多次 write/put 调用
-        const std::size_t L = rec.seq.size();
         const std::size_t width = (line_width_ == 0) ? 80 : line_width_;
 
+        // header + sequence 先写入临时局部缓冲 recordbuf，然后再追加到 writer 的大 buffer_。
+        // 这样可以保持现有格式逻辑不变，同时把多条记录合并成更少的磁盘写。
+        std::string recordbuf;
+        recordbuf.reserve(1 + rec.id.size() + (rec.desc.empty() ? 0 : 1 + rec.desc.size()) + 1 +
+                          rec.seq.size() + (rec.seq.size() / width) + 2);
+
+        // header
+        recordbuf.push_back('>');
+        recordbuf.append(rec.id);
+        if (!rec.desc.empty()) {
+            recordbuf.push_back(' ');
+            recordbuf.append(rec.desc);
+        }
+        recordbuf.push_back('\n');
+
+        // sequence (wrapped)
+        const std::size_t L = rec.seq.size();
         if (L == 0) {
-            out_.put('\n');
+            recordbuf.push_back('\n');
+        } else {
+            for (std::size_t i = 0; i < L; i += width) {
+                const std::size_t n = (i + width <= L) ? width : (L - i);
+                recordbuf.append(rec.seq.data() + i, n);
+                recordbuf.push_back('\n');
+            }
+        }
+
+        // 如果禁用额外缓冲，则直接写入文件。
+        if (buffer_threshold_bytes_ == 0) {
+            out_.write(recordbuf.data(), static_cast<std::streamsize>(recordbuf.size()));
             return;
         }
 
-        std::string seqbuf;
-        seqbuf.reserve(L + (L / width) + 1);
-        for (std::size_t i = 0; i < L; i += width) {
-            const std::size_t n = (i + width <= L) ? width : (L - i);
-            seqbuf.append(rec.seq.data() + static_cast<std::size_t>(i), n);
-            seqbuf.push_back('\n');
-        }
+        // 否则追加到内部 buffer_。
+        buffer_.append(recordbuf);
 
-        out_.write(seqbuf.data(), static_cast<std::streamsize>(seqbuf.size()));
+        // 达到阈值就批量写入。
+        if (buffer_.size() >= buffer_threshold_bytes_) {
+            flushBuffer_();
+        }
     }
 
     void FastaWriter::flush()
     {
+        if (!out_) return;
+        flushBuffer_();
         out_.flush();
     }
 

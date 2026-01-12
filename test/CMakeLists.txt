@@ -33,7 +33,7 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/consensus/consensus.cpp"
         "${HALIGN4_ROOT}/src/seed/minimizer.cpp"
         "${HALIGN4_ROOT}/src/mash/mash.cpp"
-        "${HALIGN4_ROOT}/align/ref_aligner.cpp"
+        "${HALIGN4_ROOT}/src/align/ref_aligner.cpp"
 )
 
 target_include_directories(halign4_test_support PUBLIC
@@ -89,6 +89,7 @@ add_executable(halign4_tests
         "${CMAKE_CURRENT_LIST_DIR}/test_minimizer.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_mash.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_jaccard.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_fasta_writer.cpp"
 )
 
 target_link_libraries(halign4_tests PRIVATE halign4_test_support)
@@ -136,3 +137,6 @@ add_test(NAME mash
 
 add_test(NAME jaccard
         COMMAND halign4_tests --test-suite=jaccard)
+
+add_test(NAME write_fasta
+        COMMAND halign4_tests --test-suite=write_fasta)
