@@ -20,7 +20,7 @@ namespace align {
         RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size = 21, int window_size = 10,
                     int sketch_size = 2000, bool noncanonical = true);
 
-        void alignQueryToRef(const FilePath& qry_fasta_path);;
+        void alignQueryToRef(const FilePath& qry_fasta_path);
 
 
         private:

@@ -176,14 +176,19 @@ namespace seq_io
                                  " for file: " + impl_->file_path.string());
     }
 
-    // ------------------------- FastaWriter -------------------------
+    // ------------------------- SeqWriter -------------------------
 
-    FastaWriter::FastaWriter(const FilePath& file_path, std::size_t line_width)
-        : FastaWriter(file_path, line_width, 8ULL * 1024ULL * 1024ULL)
+    SeqWriter::SeqWriter(const FilePath& file_path, std::size_t line_width)
+        : SeqWriter(file_path, Format::fasta, line_width, 8ULL * 1024ULL * 1024ULL)
     {}
 
-    FastaWriter::FastaWriter(const FilePath& file_path, std::size_t line_width, std::size_t buffer_threshold_bytes)
+    SeqWriter::SeqWriter(const FilePath& file_path, std::size_t line_width, std::size_t buffer_threshold_bytes)
+        : SeqWriter(file_path, Format::fasta, line_width, buffer_threshold_bytes)
+    {}
+
+    SeqWriter::SeqWriter(const FilePath& file_path, Format fmt, std::size_t line_width, std::size_t buffer_threshold_bytes)
         : out_(file_path, std::ios::binary),
+          format_(fmt),
           line_width_(line_width == 0 ? 80 : line_width),
           buffer_threshold_bytes_(buffer_threshold_bytes)
     {
@@ -191,17 +196,18 @@ namespace seq_io
             throw makeIoError("failed to open output", file_path);
         }
 
-        // 为了减少 buffer_ 动态扩容次数，提前 reserve 一些空间。
-        // - 若 threshold 为 0：禁用额外缓冲，不需要 reserve。
-        // - 若 threshold 为正：reserve 到 min(threshold, 8MiB)（默认 threshold 本身就是 8MiB）。
         if (buffer_threshold_bytes_ > 0) {
             buffer_.reserve(std::min<std::size_t>(buffer_threshold_bytes_, 8ULL * 1024ULL * 1024ULL));
         }
     }
 
-    FastaWriter::~FastaWriter()
+    SeqWriter SeqWriter::Sam(const FilePath& file_path, std::size_t buffer_threshold_bytes)
     {
-        // 析构时尽量 flush，但不要在析构中抛异常（避免 stack-unwinding 期间 terminate）。
+        return SeqWriter(file_path, Format::sam, /*line_width=*/0, buffer_threshold_bytes);
+    }
+
+    SeqWriter::~SeqWriter()
+    {
         try {
             flush();
         } catch (...) {
@@ -209,41 +215,51 @@ namespace seq_io
         }
     }
 
-    void FastaWriter::flushBuffer_()
+    void SeqWriter::flushBuffer_()
     {
         if (buffer_.empty()) return;
         out_.write(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
         buffer_.clear();
     }
 
-    void FastaWriter::writeWrapped(std::ofstream& out, std::string_view s, std::size_t width)
+    void SeqWriter::appendOrFlush_(std::string_view s)
     {
-        for (std::size_t i = 0; i < s.size(); i += width) {
-            const std::size_t n = (i + width <= s.size()) ? width : (s.size() - i);
-            out.write(s.data() + static_cast<std::streamoff>(i), static_cast<std::streamsize>(n));
-            out.put('\n');
+        if (!out_) throw std::runtime_error("SeqWriter output stream is not ready");
+
+        // 禁用额外缓冲：直接写入文件（仍然会经过 ofstream 的内部缓冲机制）。
+        if (buffer_threshold_bytes_ == 0) {
+            out_.write(s.data(), static_cast<std::streamsize>(s.size()));
+            return;
+        }
+
+        buffer_.append(s.data(), s.size());
+        if (buffer_.size() >= buffer_threshold_bytes_) {
+            flushBuffer_();
         }
     }
 
-    // FastaWriter::write 的实现包含了若干写优化：
-    // - 先把 header 构造为一个小字符串并一次写出，避免多次写调用；
-    // - 将序列按行宽组装到一个临时缓冲 seqbuf 中，然后一次性写出，避免 per-character/line 的多次系统调用；
-    // - 这种策略在写入巨型 fasta 文件时能显著减少 I/O 开销，但会占用额外的内存用于 seqbuf（其大小 ≈ L + L/width）。
-    // - 如果需要进一步提升写性能，可以考虑：
-    //     * 使用 unbuffered write（低层 write）并管理自己的较大缓冲区；
-    //     * 使用多线程生产者-消费者模型：写线程负责把已经准备好的缓冲写入磁盘，计算线程负责生成序列字符串。
-    //   这些会增加实现复杂度（并发、同步与错误处理）。
-    // - 小提示：通用做法是把写缓冲大小设置为几百 KB 到几 MB，根据目标磁盘与系统内存调整。
-
-    // cpp
-    void FastaWriter::write(const SeqRecord& rec)
+    void SeqWriter::appendWrapped_(std::string& dst, std::string_view s, std::size_t width)
     {
-        if (!out_) throw std::runtime_error("FastaWriter output stream is not ready");
+        if (width == 0) {
+            dst.append(s.data(), s.size());
+            return;
+        }
+
+        for (std::size_t i = 0; i < s.size(); i += width) {
+            const std::size_t n = (i + width <= s.size()) ? width : (s.size() - i);
+            dst.append(s.data() + i, n);
+            dst.push_back('\n');
+        }
+    }
+
+    void SeqWriter::writeFasta(const SeqRecord& rec)
+    {
+        if (format_ != Format::fasta) {
+            throw std::runtime_error("SeqWriter::writeFasta called but writer is not in FASTA mode");
+        }
 
         const std::size_t width = (line_width_ == 0) ? 80 : line_width_;
 
-        // header + sequence 先写入临时局部缓冲 recordbuf，然后再追加到 writer 的大 buffer_。
-        // 这样可以保持现有格式逻辑不变，同时把多条记录合并成更少的磁盘写。
         std::string recordbuf;
         recordbuf.reserve(1 + rec.id.size() + (rec.desc.empty() ? 0 : 1 + rec.desc.size()) + 1 +
                           rec.seq.size() + (rec.seq.size() / width) + 2);
@@ -258,33 +274,76 @@ namespace seq_io
         recordbuf.push_back('\n');
 
         // sequence (wrapped)
-        const std::size_t L = rec.seq.size();
-        if (L == 0) {
+        if (rec.seq.empty()) {
             recordbuf.push_back('\n');
         } else {
-            for (std::size_t i = 0; i < L; i += width) {
-                const std::size_t n = (i + width <= L) ? width : (L - i);
+            for (std::size_t i = 0; i < rec.seq.size(); i += width) {
+                const std::size_t n = (i + width <= rec.seq.size()) ? width : (rec.seq.size() - i);
                 recordbuf.append(rec.seq.data() + i, n);
                 recordbuf.push_back('\n');
             }
         }
 
-        // 如果禁用额外缓冲，则直接写入文件。
-        if (buffer_threshold_bytes_ == 0) {
-            out_.write(recordbuf.data(), static_cast<std::streamsize>(recordbuf.size()));
-            return;
-        }
-
-        // 否则追加到内部 buffer_。
-        buffer_.append(recordbuf);
-
-        // 达到阈值就批量写入。
-        if (buffer_.size() >= buffer_threshold_bytes_) {
-            flushBuffer_();
-        }
+        appendOrFlush_(recordbuf);
     }
 
-    void FastaWriter::flush()
+    void SeqWriter::writeSamHeader(std::string_view header_text)
+    {
+        if (format_ != Format::sam) {
+            throw std::runtime_error("SeqWriter::writeSamHeader called but writer is not in SAM mode");
+        }
+
+        if (header_text.empty()) return;
+
+        appendOrFlush_(header_text);
+        if (header_text.back() != '\n') {
+            appendOrFlush_("\n");
+        }
+
+        sam_header_written_ = true;
+    }
+
+    void SeqWriter::writeSam(const SamRecord& r)
+    {
+        if (format_ != Format::sam) {
+            throw std::runtime_error("SeqWriter::writeSam called but writer is not in SAM mode");
+        }
+
+        std::string line;
+        line.reserve(r.qname.size() + r.rname.size() + r.cigar.size() + r.rnext.size() + r.seq.size() + r.qual.size() + 64);
+
+        line.append(r.qname.data(), r.qname.size());
+        line.push_back('\t');
+        line.append(std::to_string(r.flag));
+        line.push_back('\t');
+        line.append(r.rname.data(), r.rname.size());
+        line.push_back('\t');
+        line.append(std::to_string(r.pos));
+        line.push_back('\t');
+        line.append(std::to_string(static_cast<unsigned int>(r.mapq)));
+        line.push_back('\t');
+        line.append(r.cigar.data(), r.cigar.size());
+        line.push_back('\t');
+        line.append(r.rnext.data(), r.rnext.size());
+        line.push_back('\t');
+        line.append(std::to_string(r.pnext));
+        line.push_back('\t');
+        line.append(std::to_string(r.tlen));
+        line.push_back('\t');
+        line.append(r.seq.data(), r.seq.size());
+        line.push_back('\t');
+        line.append(r.qual.data(), r.qual.size());
+
+        if (!r.opt.empty()) {
+            if (r.opt.front() != '\t') line.push_back('\t');
+            line.append(r.opt.data(), r.opt.size());
+        }
+
+        line.push_back('\n');
+        appendOrFlush_(line);
+    }
+
+    void SeqWriter::flush()
     {
         if (!out_) return;
         flushBuffer_();

@@ -95,7 +95,7 @@ TEST_SUITE("read_fasta")
         auto dir = makeTempDir("halign4_tests_read_perf");
         fs::path in = dir / "aligned_1000_30000.fasta";
         fs::path out = dir / "aligned_1000_30000_out.fasta";
-        seq_io::FastaWriter clean_writer(out);
+        seq_io::SeqWriter clean_writer(out);
 
         // 1) 准备输入（不计入读取耗时）
         writeAlignedFastaSingleLine(in, N, LEN);

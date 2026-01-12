@@ -42,14 +42,14 @@ static double toMiB(double bytes) { return bytes / (1024.0 * 1024.0); }
 
 TEST_SUITE("write_fasta")
 {
-    TEST_CASE("FastaWriter - buffered flush on flush() and destructor")
+    TEST_CASE("SeqWriter(FASTA) - buffered flush on flush() and destructor")
     {
         auto dir = makeTempDir("halign4_tests_fasta_writer");
         fs::path out = dir / "out.fasta";
 
         // 使用一个很大的阈值，确保 write() 过程中不会自动触发 flushBuffer_。
         {
-            seq_io::FastaWriter w(out, /*line_width=*/4, /*buffer_threshold_bytes=*/1ULL << 30);
+            seq_io::SeqWriter w(out, /*line_width=*/4, /*buffer_threshold_bytes=*/1ULL << 30);
 
             seq_io::SeqRecord r1{"id1", "", "ACGTACGT", ""};
             seq_io::SeqRecord r2{"id2", "desc", "TT", ""};
@@ -82,12 +82,12 @@ TEST_SUITE("write_fasta")
         fs::remove_all(dir, ec);
     }
 
-    TEST_CASE("FastaWriter - disable buffer (threshold=0) writes immediately")
+    TEST_CASE("SeqWriter(FASTA) - disable buffer (threshold=0)")
     {
         auto dir = makeTempDir("halign4_tests_fasta_writer_nobuf");
         fs::path out = dir / "out.fasta";
 
-        seq_io::FastaWriter w(out, /*line_width=*/80, /*buffer_threshold_bytes=*/0);
+        seq_io::SeqWriter w(out, /*line_width=*/80, /*buffer_threshold_bytes=*/0);
         seq_io::SeqRecord r{"id", "", "AAAA", ""};
         w.write(r);
 
@@ -108,7 +108,7 @@ TEST_SUITE("write_fasta")
         fs::remove_all(dir, ec);
     }
 
-    TEST_CASE("perf: write time n=10000 len=30000 (FastaWriter)")
+    TEST_CASE("perf: write time n=10000 len=30000 (SeqWriter/FASTA)")
     {
         if (shouldSkipPerf()) {
             doctest::skip(true);
@@ -134,7 +134,7 @@ TEST_SUITE("write_fasta")
 
         // 1) 默认 writer（内部额外缓冲阈值约 8MiB）
         {
-            seq_io::FastaWriter w(out_buf);
+            seq_io::SeqWriter w(out_buf);
             auto t0 = std::chrono::steady_clock::now();
             for (std::size_t i = 0; i < N; ++i) {
                 rec.id = "s" + std::to_string(i);
@@ -150,7 +150,7 @@ TEST_SUITE("write_fasta")
 
         // 2) 关闭额外缓冲（阈值=0）
         {
-            seq_io::FastaWriter w(out_nobuf, /*line_width=*/80, /*buffer_threshold_bytes=*/0);
+            seq_io::SeqWriter w(out_nobuf, /*line_width=*/80, /*buffer_threshold_bytes=*/0);
             auto t0 = std::chrono::steady_clock::now();
             for (std::size_t i = 0; i < N; ++i) {
                 rec.id = "s" + std::to_string(i);
@@ -169,6 +169,37 @@ TEST_SUITE("write_fasta")
         CHECK(fs::file_size(out_buf, ec) > 0);
         CHECK(fs::file_size(out_nobuf, ec) > 0);
 
+        fs::remove_all(dir, ec);
+    }
+
+    TEST_CASE("SeqWriter(SAM) - smoke")
+    {
+        auto dir = makeTempDir("halign4_tests_write_sam_smoke");
+        fs::path out = dir / "out.sam";
+
+        auto w = seq_io::SeqWriter::Sam(out, /*buffer_threshold_bytes=*/1024);
+        w.writeSamHeader("@HD\tVN:1.6\tSO:unknown\n@SQ\tSN:ref\tLN:4\n");
+
+        seq_io::SeqWriter::SamRecord r;
+        r.qname = "q1";
+        r.flag = 0;
+        r.rname = "ref";
+        r.pos = 1;
+        r.mapq = 60;
+        r.cigar = "4M";
+        r.rnext = "*";
+        r.pnext = 0;
+        r.tlen = 0;
+        r.seq = "ACGT";
+        r.qual = "!!!!";
+        w.writeSam(r);
+        w.flush();
+
+        const std::string got = slurp(out);
+        CHECK(got.find("@HD\tVN:1.6\tSO:unknown") != std::string::npos);
+        CHECK(got.find("q1\t0\tref\t1\t60\t4M\t*\t0\t0\tACGT\t!!!!") != std::string::npos);
+
+        std::error_code ec;
         fs::remove_all(dir, ec);
     }
 }

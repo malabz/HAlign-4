@@ -13,7 +13,7 @@
 // - 最终把清洗后的数据与选中的 consensus 输出到指定文件（在此文件中只负责选择与写出接口，具体写出由调用者处理）。
 
 // 解释：此处使用的 FilePath 为 file_io::FilePath（即 std::filesystem::path 的别名），
-// seq_io 命名空间封装了读取/写入 FASTA 的细节（openKseqReader / FastaWriter / SeqRecord 等）。
+// seq_io 命名空间封装了读取/写入 FASTA 的细节（openKseqReader / SeqWriter / SeqRecord 等）。
 
 uint_t preprocessInputFasta(const std::string input_path, const std::string workdir, const int cons_n) {
     // 参数说明：
@@ -74,9 +74,9 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 
     // ---------- 打开 reader/writer 与 TopK 选择器 ----------
     // seq_io::openKseqReader 返回一个 reader 指针（抽象），用于逐条读取序列；
-    // seq_io::FastaWriter 用于把清洗后的序列写入到目标文件。
+    // seq_io::SeqWriter 用于把清洗后的序列写入到目标文件。
     auto reader = seq_io::openKseqReader(raw_dest_file);
-    seq_io::FastaWriter clean_writer(clean_dest_file);
+    seq_io::SeqWriter clean_writer(clean_dest_file);
     TopKLongestSelector selector(cons_n);
 
     // 处理循环：读取 -> 清洗 -> 写出 -> 交给 TopK 选择器
@@ -88,7 +88,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     // - 该循环为预处理的热路径，若输入很大（成千上万 / 几百万条序列），要关注 IO 与内存占用。
     // - 性能优化点：
     //    * 使用 seq_io 的 KseqReader（基于 fread/gzread）并配合大缓冲可以显著提升读取吞吐；
-    //    * FastaWriter::write 会把一条记录的 header 与折行后的序列缓存在临时字符串中一次性写出，
+    //    * SeqWriter::write 会把一条记录的 header 与折行后的序列缓存在临时字符串中并一次性写出，
     //      避免逐字符写入带来的系统调用开销；这对写大文件非常重要；
     //    * TopKLongestSelector 应该实现为维护一个大小为 K 的最小堆，插入/替换成本为 O(log K)，适合 K 远小于记录总数的场景；
     // - 内存权衡：TopK 的实现会保留 K 条完整记录（占用内存 O(K * avg_len)），若 K 很大需注意内存使用。
@@ -114,10 +114,10 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 
     // ---------- 将 TopK 结果写成共识输入文件 ----------
     // 说明：takeSortedDesc 返回按长度降序排序的记录列表（一般用于选取最长的 N 条序列作为共识计算输入）
-    seq_io::FastaWriter cons_writer(consensus_file);
+    seq_io::SeqWriter cons_writer(consensus_file);
     auto cons_seqs = selector.takeSortedDesc();
 
-    // 将选出的序列写到 consensus 文件；注意保持一致的换行宽度等格式规则，FastaWriter 负责这些细节。
+    // 将选出的序列写到 consensus 文件；注意保持一致的换行宽度等格式规则，SeqWriter 负责这些细节。
     for (const auto& cons_rec : cons_seqs) {
         // 这里写出的 cons_rec 应该是一个深拷贝的 SeqRecord（由 selector 返回以保证安全），如果不是需要在 selector 中做拷贝。
         cons_writer.write(cons_rec);

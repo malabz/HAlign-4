@@ -116,6 +116,22 @@ namespace seq_io
     };
     using SeqRecords     = std::vector<seq_io::SeqRecord>;
 
+    struct SamRecord
+    {
+        std::string_view qname;
+        std::uint16_t flag = 0;
+        std::string_view rname = "*";
+        std::uint32_t pos = 0;     // 1-based; 0 means '*'
+        std::uint8_t mapq = 0;
+        std::string_view cigar = "*";
+        std::string_view rnext = "*";
+        std::uint32_t pnext = 0;
+        std::int32_t tlen = 0;
+        std::string_view seq = "*";
+        std::string_view qual = "*";
+        std::string_view opt = {}; // 可选 TAG 字段
+    };
+
     // makeCleanTable / clean_table:
     // - 用于把任意字符映射到一个受限的碱基字符集合（'A','C','G','T','U','N','-'），
     // - 实现为 256 大小的查表（针对 unsigned char），避免运行时的分支/条件判断，极大提升批量清洗性能；
@@ -187,41 +203,67 @@ namespace seq_io
         std::unique_ptr<Impl> impl_;
     };
 
-    // FastaWriter：用于把 SeqRecord 以 FASTA 格式写出到磁盘
-    // 性能提示：write 会把 header 与序列按行宽组织为一个临时缓冲并一次性写入，
-    // 避免逐字符或逐行的小量写调用，从而提升磁盘写吞吐。
-    class FastaWriter
+    // SeqWriter：通用序列/比对结果写出器
+    //
+    // 支持格式：
+    // - FASTA：写出 SeqRecord（id/desc/seq）
+    // - SAM  ：写出最小可用的 SAM（header + alignment records）
+    //
+    // 说明：
+    // - 默认使用 8MiB 的内部聚合缓冲，尽可能减少磁盘写调用次数；
+    // - 为了兼容旧用法，保留 write(const SeqRecord&) 作为 FASTA 写出的默认入口。
+    class SeqWriter
     {
     public:
-        // 说明：保持原有构造函数不变，默认启用约 8MiB 的内部缓冲。
-        // 当累计写入内容超过该阈值时才会触发一次真正的磁盘写入，从而减少 write() 系统调用次数。
-        explicit FastaWriter(const FilePath& file_path, std::size_t line_width = 80);
+        enum class Format : std::uint8_t
+        {
+            fasta = 0,
+            sam   = 1,
+        };
 
-        // 可选高级构造：允许自定义缓冲阈值（字节）。
-        // - buffer_threshold_bytes = 0 表示禁用额外缓冲（每次 write() 直接写入 ofstream）。
-        FastaWriter(const FilePath& file_path, std::size_t line_width, std::size_t buffer_threshold_bytes);
+        // FASTA（默认）
+        explicit SeqWriter(const FilePath& file_path, std::size_t line_width = 80);
+        SeqWriter(const FilePath& file_path, std::size_t line_width, std::size_t buffer_threshold_bytes);
 
-        void write(const SeqRecord& rec);
+        // SAM 构造（工厂函数）
+        static SeqWriter Sam(const FilePath& file_path, std::size_t buffer_threshold_bytes = 8ULL * 1024ULL * 1024ULL);
+
+        // 当前模式
+        Format format() const noexcept { return format_; }
+
+        // ------------------------- FASTA -------------------------
+        void writeFasta(const SeqRecord& rec);
+
+        // 兼容：默认 write() 写 FASTA
+        void write(const SeqRecord& rec) { writeFasta(rec); }
+
+        // ------------------------- SAM -------------------------
+        void writeSamHeader(std::string_view header_text);
+
+
+        void writeSam(const SamRecord& r);
 
         // flush():
-        // - 把 FastaWriter 的内部缓冲区内容写入文件；
-        // - 然后调用底层 ofstream::flush()。
-        // 建议在写完所有记录后显式调用一次，或依赖析构函数自动 flush。
+        // - 先 flush 内部聚合缓冲，再 flush ofstream
         void flush();
 
-        ~FastaWriter();
+        ~SeqWriter();
 
     private:
+        explicit SeqWriter(const FilePath& file_path, Format fmt, std::size_t line_width, std::size_t buffer_threshold_bytes);
+
         std::ofstream out_;
+        Format format_{Format::fasta};
         std::size_t line_width_{80};
 
-        // 内部累积缓冲区，达到阈值后批量写。
         std::string buffer_;
-        std::size_t buffer_threshold_bytes_{8ULL * 1024ULL * 1024ULL}; // 默认 8MiB
+        std::size_t buffer_threshold_bytes_{8ULL * 1024ULL * 1024ULL};
+
+        bool sam_header_written_{false};
 
         void flushBuffer_();
-
-        static void writeWrapped(std::ofstream& out, std::string_view s, std::size_t width);
+        void appendOrFlush_(std::string_view s);
+        static void appendWrapped_(std::string& dst, std::string_view s, std::size_t width);
     };
 
     inline std::unique_ptr<ISequenceReader> openKseqReader(const FilePath& file_path)
