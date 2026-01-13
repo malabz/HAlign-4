@@ -17,6 +17,7 @@ include_directories(
         ${PROJECT_SOURCE_DIR}/extern/CLI11/include
         ${PROJECT_SOURCE_DIR}/extern/spdlog/include
         ${PROJECT_SOURCE_DIR}/extern/cereal/include
+        ${PROJECT_SOURCE_DIR}/extern/WFA2-lib
 )
 
 add_executable(halign4
@@ -53,9 +54,24 @@ endif()
 
 find_package(OpenMP REQUIRED)
 
-target_link_libraries(halign4 PRIVATE OpenMP::OpenMP_CXX)
+# ---------------------------------------------------------------------------
+# WFA2-lib（Wavefront Alignment）子项目裁剪：只编译核心库，不编译测试/benchmark
+# ---------------------------------------------------------------------------
+set(BUILD_TESTING OFF CACHE BOOL "Disable tests for subprojects" FORCE)
+set(CMAKE_DISABLE_FIND_PACKAGE_PkgConfig ON CACHE BOOL "Avoid PkgConfig dependency for WFA2-lib" FORCE)
 
+# WFA2-lib 的 OPENMP 选项默认 OFF。但我们的主工程已启用 OpenMP，
+# 为了让 WFA2-lib 正确打开 WFA_PARALLEL，这里显式打开。
+set(OPENMP ON CACHE BOOL "Enable OpenMP for WFA2-lib" FORCE)
 
+# 关键：只编译核心库，关闭 WFA2-lib 自带 benchmark/tests。
+# （这两个开关由我们在 extern/WFA2-lib/CMakeLists.txt 中补充，默认 ON；这里只在主工程里强制关闭。）
+set(WFA2LIB_BUILD_BENCHMARK OFF CACHE BOOL "Do not build WFA2-lib benchmark" FORCE)
+set(WFA2LIB_BUILD_TESTS OFF CACHE BOOL "Do not register WFA2-lib tests" FORCE)
+
+add_subdirectory(extern/WFA2-lib)
+
+target_link_libraries(halign4 PRIVATE OpenMP::OpenMP_CXX wfa2::wfa2cpp_static)
 
 # 在 Release 时添加激进的优化标志：GCC/Clang 与 MSVC 分别处理
 if (MSVC)
