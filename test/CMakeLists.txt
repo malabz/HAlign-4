@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(HAlign4Tests LANGUAGES CXX)
+project(HAlign4Tests LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -98,12 +98,18 @@ set(OPENMP ON CACHE BOOL "Enable OpenMP for WFA2-lib" FORCE)
 set(WFA2LIB_BUILD_BENCHMARK OFF CACHE BOOL "Do not build WFA2-lib benchmark" FORCE)
 set(WFA2LIB_BUILD_TESTS OFF CACHE BOOL "Do not register WFA2-lib tests" FORCE)
 
-# 注意：本 CMakeLists 位于 test/ 目录下，这里需要返回到工程根目录再进入 extern/WFA2-lib
-add_subdirectory(../extern/WFA2-lib)
+# 注意：本 CMakeLists 位于 test/ 目录下，这里需要返回到工程根目录再进入 extern/WFA2-lib。
+# CMake 规定：add_subdirectory() 引入“非当前目录的子目录”时，必须显式指定 binary dir，
+# 否则会报："not a subdirectory ... must be explicitly specified"。
+#
+# 这里把 WFA2-lib 的构建目录固定放到 test 的构建树里，避免污染主工程 build 目录，
+# 也避免多处 add_subdirectory 相互冲突。
+add_subdirectory(${HALIGN4_ROOT}/extern/WFA2-lib ${CMAKE_CURRENT_BINARY_DIR}/wfa2lib-build)
+
 # 注意：这里不能直接链接到主工程 target `halign4`（在此 CMakeLists 中并未定义），
 # 否则在配置阶段会报错。我们将 OpenMP + WFA2 静态库链接到测试支撑库，
 # 让 halign4_tests 通过 halign4_test_support 间接获得这些依赖，保持测试逻辑不变。
-target_link_libraries(halign4_test_support PRIVATE OpenMP::OpenMP_CXX wfa2::wfa2cpp_static))
+target_link_libraries(halign4_test_support PRIVATE OpenMP::OpenMP_CXX wfa2::wfa2cpp_static)
 
 
 add_executable(halign4_tests
