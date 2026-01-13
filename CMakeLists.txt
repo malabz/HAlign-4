@@ -28,11 +28,13 @@ add_executable(halign4
         src/utils/file_io.cpp
         src/mash/hash.cpp
         src/mash/xxhash.c
+        src/mash/mash.cpp
         src/consensus/selector.cpp
         src/consensus/consensus.cpp
         src/align/ref_aligner.cpp
+        src/align/ksw2_extz2_sse.c
         src/seed/minimizer.cpp
-        src/mash/mash.cpp
+
 )
 
 find_package(CURL)
