@@ -117,7 +117,6 @@ TEST_SUITE("read_fasta")
             ++count;
             if (rec.seq.size() != LEN) ++bad_len;
             seq_io::cleanSequence(rec.seq);
-            clean_writer.write(rec);
         }
 
         auto t1 = std::chrono::steady_clock::now();

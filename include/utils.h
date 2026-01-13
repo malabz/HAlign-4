@@ -116,22 +116,6 @@ namespace seq_io
     };
     using SeqRecords     = std::vector<seq_io::SeqRecord>;
 
-    struct SamRecord
-    {
-        std::string_view qname;
-        std::uint16_t flag = 0;
-        std::string_view rname = "*";
-        std::uint32_t pos = 0;     // 1-based; 0 means '*'
-        std::uint8_t mapq = 0;
-        std::string_view cigar = "*";
-        std::string_view rnext = "*";
-        std::uint32_t pnext = 0;
-        std::int32_t tlen = 0;
-        std::string_view seq = "*";
-        std::string_view qual = "*";
-        std::string_view opt = {}; // 可选 TAG 字段
-    };
-
     // makeCleanTable / clean_table:
     // - 用于把任意字符映射到一个受限的碱基字符集合（'A','C','G','T','U','N','-'），
     // - 实现为 256 大小的查表（针对 unsigned char），避免运行时的分支/条件判断，极大提升批量清洗性能；
@@ -223,7 +207,16 @@ namespace seq_io
 
         // FASTA（默认）
         explicit SeqWriter(const FilePath& file_path, std::size_t line_width = 80);
+        explicit SeqWriter(const FilePath& file_path, Format fmt, std::size_t line_width, std::size_t buffer_threshold_bytes);
+
         SeqWriter(const FilePath& file_path, std::size_t line_width, std::size_t buffer_threshold_bytes);
+
+        SeqWriter(const SeqWriter&) = delete;
+        SeqWriter& operator=(const SeqWriter&) = delete;
+
+        SeqWriter(SeqWriter&&) noexcept = default;
+        SeqWriter& operator=(SeqWriter&&) noexcept = default;
+
 
         // SAM 构造（工厂函数）
         static SeqWriter Sam(const FilePath& file_path, std::size_t buffer_threshold_bytes = 8ULL * 1024ULL * 1024ULL);
@@ -240,6 +233,23 @@ namespace seq_io
         // ------------------------- SAM -------------------------
         void writeSamHeader(std::string_view header_text);
 
+        // 最小 SAM 记录（不依赖全项目的 aln 类型，减少耦合）：
+        // QNAME, FLAG, RNAME, POS, MAPQ, CIGAR, RNEXT, PNEXT, TLEN, SEQ, QUAL
+        struct SamRecord
+        {
+            std::string_view qname;
+            std::uint16_t flag = 0;
+            std::string_view rname = "*";
+            std::uint32_t pos = 0;     // 1-based; 0 means '*'
+            std::uint8_t mapq = 0;
+            std::string_view cigar = "*";
+            std::string_view rnext = "*";
+            std::uint32_t pnext = 0;
+            std::int32_t tlen = 0;
+            std::string_view seq = "*";
+            std::string_view qual = "*";
+            std::string_view opt = {}; // 可选 TAG 字段（包含前导 '\t' 或不包含都可）
+        };
 
         void writeSam(const SamRecord& r);
 
@@ -250,7 +260,6 @@ namespace seq_io
         ~SeqWriter();
 
     private:
-        explicit SeqWriter(const FilePath& file_path, Format fmt, std::size_t line_width, std::size_t buffer_threshold_bytes);
 
         std::ofstream out_;
         Format format_{Format::fasta};
