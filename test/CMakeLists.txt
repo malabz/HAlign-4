@@ -36,6 +36,7 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/align/ref_aligner.cpp"
         "${HALIGN4_ROOT}/src/align/ksw2_extz2_sse.c"
         "${HALIGN4_ROOT}/src/align/cigar.cpp"
+        "${HALIGN4_ROOT}/src/align/align.cpp"
 )
 
 target_include_directories(halign4_test_support PUBLIC
@@ -122,6 +123,7 @@ add_executable(halign4_tests
         "${CMAKE_CURRENT_LIST_DIR}/test_mash.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_jaccard.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_fasta_writer.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_align.cpp"
 )
 
 target_link_libraries(halign4_tests PRIVATE halign4_test_support)
@@ -172,3 +174,14 @@ add_test(NAME jaccard
 
 add_test(NAME write_fasta
         COMMAND halign4_tests --test-suite=write_fasta)
+
+# Align 正确性测试（快速）
+add_test(NAME align
+        COMMAND halign4_tests --test-suite=align)
+
+# Align 性能测试（耗时较长，包含高相似度序列测试）
+add_test(NAME align_perf
+        COMMAND halign4_tests --test-suite=align_perf)
+set_tests_properties(align_perf PROPERTIES TIMEOUT 600)  # 10分钟超时
+
+
