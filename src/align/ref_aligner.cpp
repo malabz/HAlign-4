@@ -68,11 +68,72 @@ namespace align {
         // 委托构造函数已完成所有初始化工作
     }
 
+    // ------------------------------------------------------------------
+    // 辅助函数：根据 keep_first_length 标志选择参考序列名称
+    // ------------------------------------------------------------------
+    std::string_view RefAligner::getRefNameForRecheck() const
+    {
+        if (keep_first_length && !ref_sequences.empty()) {
+            return ref_sequences[0].id;
+        }
+        return "consensus";
+    }
+
+    // ------------------------------------------------------------------
+    // 辅助函数：执行二次比对（用于插入判断）
+    // 说明：
+    // 1. 根据 keep_first_length 标志选择不同的参考序列
+    //    - true:  与 ref_sequences[0] 比对
+    //    - false: 与 consensus_seq 比对
+    // 2. 如果参考序列为空，返回空 CIGAR
+    // ------------------------------------------------------------------
+    cigar::Cigar_t RefAligner::performRecheckAlignment(const seq_io::SeqRecord& q) const
+    {
+        const std::string* ref_seq = nullptr;
+
+        if (keep_first_length) {
+            if (!ref_sequences.empty()) {
+                ref_seq = &ref_sequences[0].seq;
+            }
+        } else {
+            if (!consensus_seq.empty()) {
+                ref_seq = &consensus_seq;
+            }
+        }
+
+        if (ref_seq) {
+            return globalAlignWFA2(*ref_seq, q.seq);
+        }
+
+        return cigar::Cigar_t{};  // 返回空 CIGAR 表示无法比对
+    }
+
+    // ------------------------------------------------------------------
+    // 辅助函数：写入SAM记录
+    // ------------------------------------------------------------------
+    void RefAligner::writeSamRecord(const seq_io::SeqRecord& q, const cigar::Cigar_t& cigar,
+                                    std::string_view ref_name, seq_io::SeqWriter& out) const
+    {
+        const std::string cigar_str = cigar::cigarToString(cigar);
+        const auto sam_rec = seq_io::makeSamRecord(q, ref_name, cigar_str, 1, 60, 0);
+        out.writeSam(sam_rec);
+    }
+
+    // ------------------------------------------------------------------
+    // 主函数：alignOneQueryToRef
+    // 功能：对单个query执行比对并写入SAM文件
+    //
+    // 流程：
+    // 1. 计算 query sketch
+    // 2. 找到最相似的 reference
+    // 3. 执行全局比对
+    // 4. 根据是否有插入进行二次判断并写入相应文件
+    // ------------------------------------------------------------------
     void RefAligner::alignOneQueryToRef(const seq_io::SeqRecord& q, int tid) const
     {
-
         auto& out = *outs[tid];
         auto& out_insertion = *outs_with_insertion[static_cast<std::size_t>(tid)];
+
         // 1) 计算 query sketch
         const mash::Sketch qsk = mash::sketchFromSequence(
             q.seq,
@@ -84,108 +145,38 @@ namespace align {
         // 2) 选择最相似 reference（线性扫描）
         double best_j = -1.0;
         std::size_t best_r = 0;
-
         for (std::size_t r = 0; r < ref_sketch.size(); ++r) {
             const double j = mash::jaccard(qsk, ref_sketch[r]);
-
-
-
             if (j > best_j) {
                 best_j = j;
                 best_r = r;
             }
         }
 
-
-
         const auto& best_ref = ref_sequences[best_r];
 
-        // 3) 执行全局比对（默认使用 WFA2，可切换为 KSW2）
-        cigar::Cigar_t cigar;
-        if (true)
-        {
-            cigar = globalAlignWFA2(best_ref.seq, q.seq);
+        // 3) 执行全局比对（使用 WFA2）
+        const cigar::Cigar_t initial_cigar = globalAlignWFA2(best_ref.seq, q.seq);
+
+        // 4) 根据是否存在插入，决定写入哪个输出文件
+        if (!cigar::hasInsertion(initial_cigar)) {
+            // 无插入：直接写入普通文件
+            writeSamRecord(q, initial_cigar, best_ref.id, out);
+            return;
         }
-        else
-        {
-            cigar= globalAlignKSW2(best_ref.seq, q.seq);
-        }
 
-        // 4) 将 CIGAR 从压缩格式转为 SAM 字符串格式（例如 "100M5I95M"）
-        const std::string cigar_str = cigar::cigarToString(cigar);
+        // 有插入：进行二次比对判断
+        const cigar::Cigar_t recheck_cigar = performRecheckAlignment(q);
 
-        // makeSamRecord获得sam_rec
-        const auto sam_rec = seq_io::makeSamRecord(
-            q,
-            best_ref.id,
-            cigar_str,
-            1,      // pos，简化处理为 1
-            60,     // mapq，简化处理为 60
-            0       // flag，简化处理为 0（正向链、未比对）
-        );
+        // 使用二次比对结果（如果失败则使用初始结果）
+        const cigar::Cigar_t& final_cigar = recheck_cigar.empty() ? initial_cigar : recheck_cigar;
+        const std::string_view ref_name = getRefNameForRecheck();
 
-
-        // 6) 根据是否存在插入，决定写入哪个输出文件
-        // 说明：
-        // - 如果 CIGAR 中存在插入操作（'I'），需要进行二次判断
-        // - 二次判断依据：根据 keep_first_length 标志，选择不同的参考序列进行比对
-        //   * keep_first_length = true:  与 ref_seq[0]（第一条参考序列）比对
-        //   * keep_first_length = false: 与 consensus_seq（共识序列）比对
-        // - 比对后，如果新的 CIGAR 中仍然有插入，则写入 out_insertion；否则写入 out
-        if (cigar::hasInsertion(cigar)) {
-            cigar::Cigar_t recheck_cigar;
-
-            if (keep_first_length) {
-                // 策略1：与第一条参考序列（ref_seq[0]）进行比对
-                // 说明：当需要保持第一条序列长度不变时，以它为基准判断插入
-                if (!ref_sequences.empty()) {
-                    recheck_cigar = globalAlignWFA2(ref_sequences[0].seq, q.seq);
-                } else {
-                    // 如果没有参考序列，回退到原始 CIGAR
-                    recheck_cigar = cigar;
-                }
-            } else {
-                // 策略2：与共识序列（consensus_seq）进行比对
-                // 说明：当使用共识序列作为参考时，以它为基准判断插入
-                if (!consensus_seq.empty()) {
-                    recheck_cigar = globalAlignWFA2(consensus_seq, q.seq);
-                } else {
-                    // 如果没有共识序列，回退到原始 CIGAR
-                    recheck_cigar = cigar;
-                }
-            }
-
-            // 重新检查二次比对的 CIGAR 是否有插入
-            // 如果仍然有插入，说明这是真正的插入变异，写入 insertion 文件
-            // 如果没有插入，说明可能是比对策略导致的差异，写入普通文件
-            if (cigar::hasInsertion(recheck_cigar)) {
-                // 重新生成 SAM 记录（使用二次比对的 CIGAR）
-                const std::string recheck_cigar_str = cigar::cigarToString(recheck_cigar);
-                const auto recheck_sam_rec = seq_io::makeSamRecord(
-                    q,
-                    keep_first_length ? ref_sequences[0].id : "consensus",
-                    recheck_cigar_str,
-                    1,
-                    60,
-                    0
-                );
-                out_insertion.writeSam(recheck_sam_rec);
-            } else {
-                // 二次比对后无插入，写入普通文件（使用二次比对的 CIGAR）
-                const std::string recheck_cigar_str = cigar::cigarToString(recheck_cigar);
-                const auto recheck_sam_rec = seq_io::makeSamRecord(
-                    q,
-                    keep_first_length ? ref_sequences[0].id : "consensus",
-                    recheck_cigar_str,
-                    1,
-                    60,
-                    0
-                );
-                out.writeSam(recheck_sam_rec);
-            }
+        // 根据二次比对结果决定输出文件
+        if (cigar::hasInsertion(final_cigar)) {
+            writeSamRecord(q, final_cigar, ref_name, out_insertion);
         } else {
-            // 没有插入，直接写入普通输出文件
-            out.writeSam(sam_rec);
+            writeSamRecord(q, final_cigar, ref_name, out);
         }
 
     }
