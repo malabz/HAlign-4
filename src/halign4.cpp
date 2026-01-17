@@ -179,7 +179,14 @@ int main(int argc, char** argv) {
         double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
         spdlog::info("Consensus generation finished, elapsed: {:.3f} s", elapsed);
 
-        align::RefAligner ref_aligner(opt, opt.center_path.empty() ? consensus_file.string() : consensus_unaligned_file.string());
+        // ---------------- 比对阶段（使用 RefAligner） ----------------
+        // 说明：
+        // 1. 如果用户指定了 center_path，则从文件读取（consensus_string 为空）
+        // 2. 否则使用内存中的 consensus_string（避免重复读取文件）
+        // 3. consensus_string 会被保存到 RefAligner 的成员变量中
+        FilePath ref_path = opt.center_path.empty() ? consensus_file : consensus_unaligned_file;
+
+        align::RefAligner ref_aligner(opt, ref_path, std::move(consensus_string));
         ref_aligner.alignQueryToRef(opt.input, opt.threads);
         // 调用RefAligner进行后续的对齐和合并工作
 

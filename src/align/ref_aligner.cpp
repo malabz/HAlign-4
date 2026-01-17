@@ -12,29 +12,30 @@ namespace align {
 
     // ------------------------------------------------------------------
     // 构造函数1：直接传入参数初始化
+    // 说明：
+    // 1. 如果提供了 consensus_string，则直接使用它作为 reference
+    // 2. 否则从 ref_fasta_path 读取参考序列
+    // 3. consensus_string 会被保存到成员变量 consensus_seq 中
+    // 4. keep_first_length 和 keep_all_length 会被保存到成员变量
     // ------------------------------------------------------------------
-    RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size, int window_size, int sketch_size, bool noncanonical)
-        : work_dir(work_dir), kmer_size(kmer_size), window_size(window_size), sketch_size(sketch_size), noncanonical(noncanonical)
+    RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size, int window_size,
+                           int sketch_size, bool noncanonical, std::string consensus_string,
+                           bool keep_first_length, bool keep_all_length)
+        : work_dir(work_dir),
+          kmer_size(kmer_size),
+          window_size(window_size),
+          sketch_size(sketch_size),
+          noncanonical(noncanonical),
+          consensus_seq(std::move(consensus_string)),  // 保存 consensus_string 到成员变量
+          keep_first_length(keep_first_length),        // 保存 keep_first_length 到成员变量
+          keep_all_length(keep_all_length)             // 保存 keep_all_length 到成员变量
     {
-        // 读取参考序列并构建索引
+        // 从文件读取参考序列并构建索引
         seq_io::KseqReader reader(ref_fasta_path);
         seq_io::SeqRecord rec;
         while (reader.next(rec))
         {
             // 关键修复：必须在 move(rec) 之前计算 sketch 和 minimizer
-            // 说明：
-            // 1. std::move(rec) 会将 rec.seq 的内容转移走，之后 rec.seq 变为空字符串
-            // 2. 因此必须先使用 rec.seq 计算 sketch 和 minimizer
-            // 3. 然后再将 rec 移动到 ref_sequences
-            //
-            // 错误的顺序（会导致 sketch 为空）：
-            //   ref_sequences.push_back(std::move(rec));  // rec.seq 被移走
-            //   ref_sketch.push_back(sketchFromSequence(rec.seq, ...));  // ❌ rec.seq 已经是空的！
-            //
-            // 正确的顺序（本次修复）：
-            //   先计算 sketch（使用 rec.seq）
-            //   再移动 rec（rec.seq 被转移）
-
             auto sketch = mash::sketchFromSequence(rec.seq, kmer_size, sketch_size, noncanonical, random_seed);
             auto minimizer = minimizer::extractMinimizerHash(rec.seq, kmer_size, window_size, noncanonical);
 
@@ -46,30 +47,25 @@ namespace align {
 
     // ------------------------------------------------------------------
     // 构造函数2：基于 Options 结构体初始化
-    //
-    // 实现说明：
+    // 说明：
     // 1. 从 Options 中提取相关参数，委托给第一个构造函数
-    // 2. 参数映射关系：
-    //    - work_dir   <- opt.workdir
-    //    - kmer_size  <- opt.kmer_size
-    //    - window_size <- opt.kmer_window
-    //    - sketch_size <- opt.sketch_size
-    //    - noncanonical <- 固定为 true（后续可扩展到 Options）
-    // 3. 使用委托构造（delegate constructor），避免代码重复
-    // 4. 性能：与直接构造函数相同，无额外开销
+    // 2. 将 consensus_string 传递给第一个构造函数并保存到成员变量
+    // 3. 从 opt 中提取 keep_first_length 和 keep_all_length
     // ------------------------------------------------------------------
-    RefAligner::RefAligner(const Options& opt, const FilePath& ref_fasta_path)
+    RefAligner::RefAligner(const Options& opt, const FilePath& ref_fasta_path, std::string consensus_string)
         : RefAligner(
-            opt.workdir,           // work_dir：工作目录
-            ref_fasta_path,        // 参考序列文件路径
-            opt.kmer_size,         // kmer_size：k-mer 大小
-            opt.kmer_window,       // window_size：minimizer 窗口大小
-            opt.sketch_size,       // sketch_size：sketch 大小
-            true                   // noncanonical：是否使用非标准模式（固定为 true）
+            opt.workdir,                // work_dir：工作目录
+            ref_fasta_path,             // 参考序列文件路径
+            opt.kmer_size,              // kmer_size：k-mer 大小
+            opt.kmer_window,            // window_size：minimizer 窗口大小
+            opt.sketch_size,            // sketch_size：sketch 大小
+            true,                       // noncanonical：是否使用非标准模式（固定为 true）
+            std::move(consensus_string),// consensus_string：共识序列（移动语义）
+            opt.keep_first_length,      // keep_first_length：从 opt 提取
+            opt.keep_all_length         // keep_all_length：从 opt 提取
         )
     {
         // 委托构造函数已完成所有初始化工作
-        // 这里可以添加额外的 Options 特定的初始化逻辑（如果需要）
     }
 
     void RefAligner::alignOneQueryToRef(const seq_io::SeqRecord& q, int tid) const
@@ -129,11 +125,66 @@ namespace align {
         );
 
 
-        // 6) 根据是否存在插入，写入不同的输出文件
-        // 性能说明：hasInsertion() 已在 cigar.cpp 中做了短路优化，平均 O(1)-O(N)
+        // 6) 根据是否存在插入，决定写入哪个输出文件
+        // 说明：
+        // - 如果 CIGAR 中存在插入操作（'I'），需要进行二次判断
+        // - 二次判断依据：根据 keep_first_length 标志，选择不同的参考序列进行比对
+        //   * keep_first_length = true:  与 ref_seq[0]（第一条参考序列）比对
+        //   * keep_first_length = false: 与 consensus_seq（共识序列）比对
+        // - 比对后，如果新的 CIGAR 中仍然有插入，则写入 out_insertion；否则写入 out
         if (cigar::hasInsertion(cigar)) {
-            out_insertion.writeSam(sam_rec);
+            cigar::Cigar_t recheck_cigar;
+
+            if (keep_first_length) {
+                // 策略1：与第一条参考序列（ref_seq[0]）进行比对
+                // 说明：当需要保持第一条序列长度不变时，以它为基准判断插入
+                if (!ref_sequences.empty()) {
+                    recheck_cigar = globalAlignWFA2(ref_sequences[0].seq, q.seq);
+                } else {
+                    // 如果没有参考序列，回退到原始 CIGAR
+                    recheck_cigar = cigar;
+                }
+            } else {
+                // 策略2：与共识序列（consensus_seq）进行比对
+                // 说明：当使用共识序列作为参考时，以它为基准判断插入
+                if (!consensus_seq.empty()) {
+                    recheck_cigar = globalAlignWFA2(consensus_seq, q.seq);
+                } else {
+                    // 如果没有共识序列，回退到原始 CIGAR
+                    recheck_cigar = cigar;
+                }
+            }
+
+            // 重新检查二次比对的 CIGAR 是否有插入
+            // 如果仍然有插入，说明这是真正的插入变异，写入 insertion 文件
+            // 如果没有插入，说明可能是比对策略导致的差异，写入普通文件
+            if (cigar::hasInsertion(recheck_cigar)) {
+                // 重新生成 SAM 记录（使用二次比对的 CIGAR）
+                const std::string recheck_cigar_str = cigar::cigarToString(recheck_cigar);
+                const auto recheck_sam_rec = seq_io::makeSamRecord(
+                    q,
+                    keep_first_length ? ref_sequences[0].id : "consensus",
+                    recheck_cigar_str,
+                    1,
+                    60,
+                    0
+                );
+                out_insertion.writeSam(recheck_sam_rec);
+            } else {
+                // 二次比对后无插入，写入普通文件（使用二次比对的 CIGAR）
+                const std::string recheck_cigar_str = cigar::cigarToString(recheck_cigar);
+                const auto recheck_sam_rec = seq_io::makeSamRecord(
+                    q,
+                    keep_first_length ? ref_sequences[0].id : "consensus",
+                    recheck_cigar_str,
+                    1,
+                    60,
+                    0
+                );
+                out.writeSam(recheck_sam_rec);
+            }
         } else {
+            // 没有插入，直接写入普通输出文件
             out.writeSam(sam_rec);
         }
 

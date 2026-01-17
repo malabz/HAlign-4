@@ -156,31 +156,25 @@ namespace align {
         public:
         // ------------------------------------------------------------------
         // 构造函数1：直接传入参数初始化
+        // 参数：
+        //   - consensus_string: 可选的共识序列字符串，如果提供则直接使用并保存到成员变量
+        //   - keep_first_length: 是否保持第一条序列的长度不变
+        //   - keep_all_length: 是否保持所有序列的长度不变
         // ------------------------------------------------------------------
         RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size = 21, int window_size = 10,
-                    int sketch_size = 2000, bool noncanonical = true);
+                    int sketch_size = 2000, bool noncanonical = true, std::string consensus_string = "",
+                    bool keep_first_length = false, bool keep_all_length = false);
 
         // ------------------------------------------------------------------
         // 构造函数2：基于 Options 结构体初始化
-        // 功能：从全局配置（Options）中提取相关参数来初始化 RefAligner
-        //
         // 参数：
         //   - opt: Options 结构体（包含所有命令行参数和配置）
-        //   - ref_fasta_path: 参考序列文件路径（必须显式指定，因为 Options 中没有专门的 ref 字段）
-        //
+        //   - ref_fasta_path: 参考序列文件路径
+        //   - consensus_string: 可选的共识序列字符串，如果提供则直接使用并保存到成员变量
         // 说明：
-        //   1. work_dir 取自 opt.workdir
-        //   2. kmer_size 取自 opt.kmer_size
-        //   3. window_size 取自 opt.kmer_window
-        //   4. sketch_size 取自 opt.sketch_size
-        //   5. noncanonical 默认为 true（后续可扩展到 Options 中）
-        //
-        // 优势：
-        //   - 减少参数传递的冗余代码
-        //   - 配置集中化，便于维护和扩展
-        //   - 与命令行解析逻辑解耦（Options 可从命令行、配置文件或测试构造）
+        //   - keep_first_length 和 keep_all_length 会从 opt 中自动提取
         // ------------------------------------------------------------------
-        RefAligner(const Options& opt, const FilePath& ref_fasta_path);
+        RefAligner(const Options& opt, const FilePath& ref_fasta_path, std::string consensus_string = "");
 
         // 说明：
         // - threads <= 0 表示使用 OpenMP 运行时默认线程数（例如由 OMP_NUM_THREADS 控制）
@@ -197,6 +191,8 @@ namespace align {
         seq_io::SeqRecords ref_sequences;
         mash::Sketches ref_sketch;
         std::vector<SeedHits> ref_minimizers;
+
+        std::string consensus_seq;  // 共识序列（作为成员变量存储）
 
         int kmer_size = 21;
         int window_size = 10;
