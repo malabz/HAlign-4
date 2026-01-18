@@ -142,13 +142,14 @@ int main(int argc, char** argv) {
             spdlog::info("Center sequence copied to: {}", consensus_unaligned_file.string());
         }
 
-        // 调用外部 MSA（可能是 mafft/clustalo/其他高质量工具），会阻塞直到命令完成
-        alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd, opt.workdir, opt.threads);
+
 
         // 如果输入序列总数小于等于用于生成共识的数量（cons_n），说明我们已经在预处理阶段就处理完毕，
         // 此时直接把 align 输出拷贝到用户指定的最终输出文件并退出；这是一个常见的快速路径，避免无谓的合并工作。
         if (opt.center_path.empty() && preproc_count <= opt.cons_n)
         {
+            // 调用外部 MSA（可能是 mafft/clustalo/其他高质量工具），会阻塞直到命令完成
+            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd,  opt.threads);
             file_io::copyFile(consensus_aligned_file,FilePath(opt.output));
             spdlog::info("All sequences processed; final output written to {}", opt.output);
             spdlog::info("halign4 End!");
@@ -163,31 +164,32 @@ int main(int argc, char** argv) {
         // - 使用 SoA（Structure-of-Arrays）便于向量化与缓存友好；
         // - 在 Release 模式启用 -O3 与 -march=native 等编译器优化，并根据目标架构调整线程亲和性（affinity）；
         // - 记录运行时间以便基准分析。
-        const std::size_t batch_size = 4096; // 可调：每轮处理的序列数（若实现使用批次）；对内存与并发有直接影响
-        spdlog::info("Starting consensus generation (double-buffered), batch_size={}...", batch_size);
-        auto t_start = std::chrono::steady_clock::now();
-        std::string consensus_string = consensus::generateConsensusSequence(
-            consensus_aligned_file,
-            consensus_file,
-            consensus_json_file,
-            0, // 不限制数量
-            opt.threads,
-            batch_size
-        );
-
-        auto t_end = std::chrono::steady_clock::now();
-        double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
-        spdlog::info("Consensus generation finished, elapsed: {:.3f} s", elapsed);
+        // const std::size_t batch_size = 4096; // 可调：每轮处理的序列数（若实现使用批次）；对内存与并发有直接影响
+        // spdlog::info("Starting consensus generation (double-buffered), batch_size={}...", batch_size);
+        // auto t_start = std::chrono::steady_clock::now();
+        // std::string consensus_string = consensus::generateConsensusSequence(
+        //     consensus_aligned_file,
+        //     consensus_file,
+        //     consensus_json_file,
+        //     0, // 不限制数量
+        //     opt.threads,
+        //     batch_size
+        // );
+        //
+        // auto t_end = std::chrono::steady_clock::now();
+        // double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
+        // spdlog::info("Consensus generation finished, elapsed: {:.3f} s", elapsed);
 
         // ---------------- 比对阶段（使用 RefAligner） ----------------
         // 说明：
         // 1. 如果用户指定了 center_path，则从文件读取（consensus_string 为空）
         // 2. 否则使用内存中的 consensus_string（避免重复读取文件）
         // 3. consensus_string 会被保存到 RefAligner 的成员变量中
-        FilePath ref_path = opt.center_path.empty() ? consensus_file : consensus_unaligned_file;
+        FilePath ref_path = opt.center_path.empty() ? consensus_file : FilePath(opt.center_path);
 
-        align::RefAligner ref_aligner(opt, ref_path, std::move(consensus_string));
-        ref_aligner.alignQueryToRef(opt.input, opt.threads);
+        align::RefAligner ref_aligner(opt, ref_path);
+        ref_aligner.alignQueryToRef(opt.input);
+        ref_aligner.mergeAlignedResults(consensus_aligned_file, opt.msa_cmd);
         // 调用RefAligner进行后续的对齐和合并工作
 
 

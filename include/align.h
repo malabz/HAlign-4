@@ -8,6 +8,8 @@
 #include <vector>
 #include <functional>
 #include "config.hpp"  // 包含 Options 结构体的完整定义
+#include "consensus.h"
+#include "preprocess.h"
 
 namespace cigar
 {
@@ -157,13 +159,20 @@ namespace align {
         // ------------------------------------------------------------------
         // 构造函数1：直接传入参数初始化
         // 参数：
-        //   - consensus_string: 可选的共识序列字符串，如果提供则直接使用并保存到成员变量
+        //   - threads: 线程数（用于共识序列生成）
+        //   - msa_cmd: MSA 命令模板字符串（用于共识序列比对）
         //   - keep_first_length: 是否保持第一条序列的长度不变
         //   - keep_all_length: 是否保持所有序列的长度不变
+        // 说明：
+        //   1. 如果 keep_first_length == true，使用 ref_sequences[0] 作为参考
+        //   2. 否则，调用 MSA 生成共识序列作为参考
+        //   3. threads 和 msa_cmd 参数仅在生成共识序列时使用
         // ------------------------------------------------------------------
-        RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size = 21, int window_size = 10,
-                    int sketch_size = 2000, bool noncanonical = true, std::string consensus_string = "",
-                    bool keep_first_length = false, bool keep_all_length = false);
+        RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
+                   int kmer_size = 21, int window_size = 10,
+                   int sketch_size = 2000, bool noncanonical = true,
+                   int threads = 1, std::string msa_cmd = "",
+                   bool keep_first_length = false, bool keep_all_length = false);
 
         // ------------------------------------------------------------------
         // 构造函数2：基于 Options 结构体初始化
@@ -174,14 +183,14 @@ namespace align {
         // 说明：
         //   - keep_first_length 和 keep_all_length 会从 opt 中自动提取
         // ------------------------------------------------------------------
-        RefAligner(const Options& opt, const FilePath& ref_fasta_path, std::string consensus_string = "");
+        RefAligner(const Options& opt, const FilePath& ref_fasta_path);
 
         // 说明：
         // - threads <= 0 表示使用 OpenMP 运行时默认线程数（例如由 OMP_NUM_THREADS 控制）
         // - batch_size 用于控制“流式读取”的批次大小，越大吞吐越高但占用内存更多
-        void alignQueryToRef(const FilePath& qry_fasta_path, int threads = 0, std::size_t batch_size = 5120);
+        void alignQueryToRef(const FilePath& qry_fasta_path, std::size_t batch_size = 5120);
 
-        void mergeAlignedResults(const FilePath& aligned_consensus_path);
+        void mergeAlignedResults(const FilePath& aligned_consensus_path, const std::string& msa_cmd);
 
 
         private:
@@ -200,11 +209,6 @@ namespace align {
                                seq_io::SeqWriter& out,
                                seq_io::SeqWriter& out_insertion) const;
 
-        // 辅助函数：根据 keep_first_length 标志选择参考序列名称
-        std::string_view getRefNameForRecheck() const;
-
-        // 辅助函数：执行二次比对（用于插入判断）
-        cigar::Cigar_t performRecheckAlignment(const seq_io::SeqRecord& q) const;
 
         // 辅助函数：写入SAM记录（选择正确的参考名称和输出文件）
         void writeSamRecord(const seq_io::SeqRecord& q, const cigar::Cigar_t& cigar,
@@ -215,12 +219,15 @@ namespace align {
         mash::Sketches ref_sketch;
         std::vector<SeedHits> ref_minimizers;
 
-        std::string consensus_seq;  // 共识序列（作为成员变量存储）
+        seq_io::SeqRecord consensus_seq;  // 共识序列（作为成员变量存储）
 
         int kmer_size = 21;
         int window_size = 10;
         int sketch_size = 2000;
         int random_seed = 42;
+
+        int threads = 1;
+        std::string msa_cmd;
 
         bool keep_first_length = false;
         bool keep_all_length = false;

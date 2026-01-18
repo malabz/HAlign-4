@@ -1,7 +1,11 @@
 #include "align.h"
 #include "config.hpp"
+#include "preprocess.h"    // alignConsensusSequence
+#include "consensus.h"     // generateConsensusSequence
 #include <algorithm>
 #include <cstddef>
+#include <fstream>         // std::ifstream, std::ofstream
+#include <filesystem>      // std::filesystem::remove
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -13,22 +17,23 @@ namespace align {
     // ------------------------------------------------------------------
     // 构造函数1：直接传入参数初始化
     // 说明：
-    // 1. 如果提供了 consensus_string，则直接使用它作为 reference
-    // 2. 否则从 ref_fasta_path 读取参考序列
-    // 3. consensus_string 会被保存到成员变量 consensus_seq 中
+    // 1. 如果 keep_first_length == true，使用 ref_sequences[0] 作为参考
+    // 2. 否则，调用 MSA 生成共识序列作为参考
+    // 3. threads 和 msa_cmd 参数用于共识序列生成
     // 4. keep_first_length 和 keep_all_length 会被保存到成员变量
     // ------------------------------------------------------------------
     RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size, int window_size,
-                           int sketch_size, bool noncanonical, std::string consensus_string,
+                           int sketch_size, bool noncanonical, int threads, std::string msa_cmd,
                            bool keep_first_length, bool keep_all_length)
         : work_dir(work_dir),
           kmer_size(kmer_size),
           window_size(window_size),
           sketch_size(sketch_size),
           noncanonical(noncanonical),
-          consensus_seq(std::move(consensus_string)),  // 保存 consensus_string 到成员变量
-          keep_first_length(keep_first_length),        // 保存 keep_first_length 到成员变量
-          keep_all_length(keep_all_length)             // 保存 keep_all_length 到成员变量
+          threads(threads),
+          msa_cmd(std::move(msa_cmd)),          // 使用 move 语义避免拷贝
+          keep_first_length(keep_first_length),
+          keep_all_length(keep_all_length)
     {
         // 从文件读取参考序列并构建索引
         seq_io::KseqReader reader(ref_fasta_path);
@@ -43,16 +48,43 @@ namespace align {
             ref_sketch.push_back(std::move(sketch));
             ref_minimizers.push_back(std::move(minimizer));
         }
+
+        if (keep_first_length)
+        {
+            consensus_seq = ref_sequences.front();
+        }
+        else
+        {
+            FilePath consensus_unaligned_file = ref_fasta_path;
+            FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
+            FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_FASTA;
+            FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_JSON;
+
+            const std::size_t batch_size = 4096;
+            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, msa_cmd, threads);
+            std::string consensus_string = consensus::generateConsensusSequence(
+                consensus_aligned_file,
+                consensus_file,
+                consensus_json_file,
+                0, // 不限制数量
+                threads,
+                batch_size
+            );
+            consensus_seq.id = "consensus";
+            consensus_seq.seq = std::move(consensus_string);
+        }
+
+
     }
 
     // ------------------------------------------------------------------
     // 构造函数2：基于 Options 结构体初始化
     // 说明：
     // 1. 从 Options 中提取相关参数，委托给第一个构造函数
-    // 2. 将 consensus_string 传递给第一个构造函数并保存到成员变量
+    // 2. 构造函数1会根据 keep_first_length 标志自动生成或选择参考序列
     // 3. 从 opt 中提取 keep_first_length 和 keep_all_length
     // ------------------------------------------------------------------
-    RefAligner::RefAligner(const Options& opt, const FilePath& ref_fasta_path, std::string consensus_string)
+    RefAligner::RefAligner(const Options& opt, const FilePath& ref_fasta_path)
         : RefAligner(
             opt.workdir,                // work_dir：工作目录
             ref_fasta_path,             // 参考序列文件路径
@@ -60,53 +92,15 @@ namespace align {
             opt.kmer_window,            // window_size：minimizer 窗口大小
             opt.sketch_size,            // sketch_size：sketch 大小
             true,                       // noncanonical：是否使用非标准模式（固定为 true）
-            std::move(consensus_string),// consensus_string：共识序列（移动语义）
+            opt.threads,                // threads：线程数（用于共识序列生成）
+            opt.msa_cmd,                // msa_cmd：MSA 命令模板
             opt.keep_first_length,      // keep_first_length：从 opt 提取
             opt.keep_all_length         // keep_all_length：从 opt 提取
         )
     {
-        // 委托构造函数已完成所有初始化工作
+        // 委托构造函数已完成所有初始化工作（包括共识序列生成）
     }
 
-    // ------------------------------------------------------------------
-    // 辅助函数：根据 keep_first_length 标志选择参考序列名称
-    // ------------------------------------------------------------------
-    std::string_view RefAligner::getRefNameForRecheck() const
-    {
-        if (keep_first_length && !ref_sequences.empty()) {
-            return ref_sequences[0].id;
-        }
-        return "consensus";
-    }
-
-    // ------------------------------------------------------------------
-    // 辅助函数：执行二次比对（用于插入判断）
-    // 说明：
-    // 1. 根据 keep_first_length 标志选择不同的参考序列
-    //    - true:  与 ref_sequences[0] 比对
-    //    - false: 与 consensus_seq 比对
-    // 2. 如果参考序列为空，返回空 CIGAR
-    // ------------------------------------------------------------------
-    cigar::Cigar_t RefAligner::performRecheckAlignment(const seq_io::SeqRecord& q) const
-    {
-        const std::string* ref_seq = nullptr;
-
-        if (keep_first_length) {
-            if (!ref_sequences.empty()) {
-                ref_seq = &ref_sequences[0].seq;
-            }
-        } else {
-            if (!consensus_seq.empty()) {
-                ref_seq = &consensus_seq;
-            }
-        }
-
-        if (ref_seq) {
-            return globalAlignWFA2(*ref_seq, q.seq);
-        }
-
-        return cigar::Cigar_t{};  // 返回空 CIGAR 表示无法比对
-    }
 
     // ------------------------------------------------------------------
     // 辅助函数：写入SAM记录
@@ -171,22 +165,21 @@ namespace align {
         }
 
         // 有插入：进行二次比对判断
-        const cigar::Cigar_t recheck_cigar = performRecheckAlignment(q);
+        const cigar::Cigar_t recheck_cigar = globalAlignWFA2(consensus_seq.seq, q.seq);;
 
         // 使用二次比对结果（如果失败则使用初始结果）
         const cigar::Cigar_t& final_cigar = recheck_cigar.empty() ? initial_cigar : recheck_cigar;
-        const std::string_view ref_name = getRefNameForRecheck();
 
         // 根据二次比对结果决定输出文件
         if (cigar::hasInsertion(final_cigar)) {
-            writeSamRecord(q, final_cigar, ref_name, out_insertion);
+            writeSamRecord(q, final_cigar, consensus_seq.id, out_insertion);
         } else {
-            writeSamRecord(q, final_cigar, ref_name, out);
+            writeSamRecord(q, final_cigar, consensus_seq.id, out);
         }
 
     }
 
-    void RefAligner::alignQueryToRef(const FilePath& qry_fasta_path, int threads, std::size_t batch_size)
+    void RefAligner::alignQueryToRef(const FilePath& qry_fasta_path, std::size_t batch_size)
     {
         // =====================================================================
         // OpenMP 并行骨架（流式读取 + 每线程独立 writer）
@@ -296,7 +289,7 @@ namespace align {
         }
     }
 
-    void RefAligner::mergeAlignedResults(const FilePath& aligned_consensus_path)
+    void RefAligner::mergeAlignedResults(const FilePath& aligned_consensus_path, const std::string& msa_cmd)
     {
         // 将多个线程的 SAM 文件合并为一个文件
         // 所有的序列都比对到多个参考序列上了，输入的参数为这些参考序列比对好的文件
@@ -309,6 +302,18 @@ namespace align {
         bool using_other_align_insertion = true;
         if (using_other_align_insertion)
         {
+            // 把insertion的sam文件合并为fasta
+            std::vector<FilePath> insertion_sam_paths;
+            for (const auto& path : outs_with_insertion_path)
+            {
+                insertion_sam_paths.push_back(path);
+            }
+            FilePath insertion_fasta_path = result_dir / "all_insertion_sequences.fasta";
+
+            // 对于insertion_fasta_path, 如果keep_first_length为true，把ref_seq[0]先写入，然后再写入其他序列
+            // 否则先把consensus_seq写入，然后再写入其他序列
+
+            seq_io::mergeSamToFasta(insertion_sam_paths, insertion_fasta_path, 80);
 
         }
         else

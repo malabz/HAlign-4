@@ -140,7 +140,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 
 
 void alignConsensusSequence(const FilePath& input_file, const FilePath& output_file,
-                            const std::string& msa_cmd, const std::string& workdir, int threads)
+                            const std::string& msa_cmd, int threads)
 {
 
     // 检查输入文件是否存在
