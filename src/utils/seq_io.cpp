@@ -641,77 +641,7 @@ namespace seq_io
         #endif
     }
 
-    // ------------------------------------------------------------------
-    // 函数：mergeSamToFasta
-    // 功能：读取多个 SAM 文件并合并转换为单个 FASTA 文件
-    //
-    // 实现说明：
-    // 1. 先创建一个 SeqWriter（FASTA 模式）打开输出文件
-    // 2. 逐个遍历输入的 SAM 文件路径
-    // 3. 对每个 SAM 文件：
-    //    a. 使用 SamReader 打开并逐条读取
-    //    b. 将每条记录追加写入到同一个 FASTA 文件
-    // 4. 所有文件处理完毕后，flush 确保数据落盘
-    //
-    // 性能优化：
-    // - 输出文件只打开一次，所有记录追加写入（避免多次打开/关闭）
-    // - 使用大缓冲区（8MiB）批量写入，减少系统调用
-    // - 每个 SamReader 独立打开和关闭，内存占用仅与单个文件的行长度相关
-    //
-    // 错误处理：
-    // - 如果某个 SAM 文件打开失败或解析错误，会抛出异常并中止合并
-    // - 已写入的数据会保留在输出文件中（部分完成状态）
-    // ------------------------------------------------------------------
-    void mergeSamToFasta(const std::vector<FilePath>& sam_paths, const FilePath& fasta_path, std::size_t line_width)
-    {
-        // 打开输出文件（FASTA 模式，使用大缓冲区优化）
-        // 说明：
-        // - 输出文件只创建一次，所有输入文件的记录都追加到这个文件
-        // - 使用 8MiB 缓冲区，批量写入以减少系统调用
-        SeqWriter writer(fasta_path, line_width);
 
-        // 统计信息（调试用）
-        std::size_t total_count = 0;
-        std::size_t file_idx = 0;
-
-        // 逐个处理每个 SAM 文件
-        for (const auto& sam_path : sam_paths) {
-            // 打开当前 SAM 文件
-            // 说明：
-            // - 每个 SamReader 独立打开和关闭
-            // - 使用 RAII 确保文件在处理完毕后自动关闭
-            // - 如果文件打开失败，会抛出异常并中止合并
-            SamReader reader(sam_path);
-
-            // 逐条读取并追加写入
-            SeqRecord rec;
-            std::size_t file_count = 0;
-
-            while (reader.next(rec)) {
-                // 写入 FASTA 格式（只保留 id 和 seq，丢弃 qual）
-                writer.writeFasta(rec);
-                ++file_count;
-                ++total_count;
-            }
-
-            // 调试信息：记录每个文件的处理进度
-            #ifdef _DEBUG
-            spdlog::debug("mergeSamToFasta: processed file {} ({}/{}): {} records from {}",
-                         file_idx + 1, file_idx + 1, sam_paths.size(), file_count, sam_path.string());
-            #endif
-
-            ++file_idx;
-        }
-
-        // 确保所有数据已刷新到磁盘
-        writer.flush();
-
-        // 记录合并统计信息（调试模式下输出）
-        #ifdef _DEBUG
-        spdlog::debug("mergeSamToFasta: merged {} SAM files ({} total records) to {}",
-                     sam_paths.size(), total_count, fasta_path.string());
-        #endif
-    }
 
 } // namespace seq_io
 

@@ -114,6 +114,79 @@ namespace align {
     }
 
     // ------------------------------------------------------------------
+    // 辅助函数：mergeConsensusAndSamToFasta
+    // 功能：将共识序列和多个 SAM 文件合并为一个 FASTA 文件
+    //
+    // 实现说明：
+    // 1. 创建一个 SeqWriter 打开输出 FASTA 文件
+    // 2. 先写入共识序列（consensus_seq）
+    // 3. 逐个读取 SAM 文件，提取序列并追加写入到同一个 writer
+    // 4. 使用同一个 writer 实例，避免文件追加模式的复杂性和性能损失
+    // 5. 所有写入操作在同一个 writer 的生命周期内完成
+    //
+    // 性能优化：
+    // - 使用大缓冲区（默认 8MiB）批量写入，减少系统调用
+    // - 流式处理 SAM 文件，内存占用与文件大小无关
+    // - 避免文件的重复打开和关闭
+    // ------------------------------------------------------------------
+    std::size_t RefAligner::mergeConsensusAndSamToFasta(
+        const std::vector<FilePath>& sam_paths,
+        const FilePath& fasta_path,
+        std::size_t line_width) const
+    {
+        // 创建 FASTA writer（非追加模式，会覆盖已存在的文件）
+        seq_io::SeqWriter writer(fasta_path, line_width);
+
+        // 1. 先写入共识序列
+        writer.writeFasta(consensus_seq);
+        writer.flush();
+
+        // 2. 统计信息（用于返回值和调试）
+        std::size_t total_count = 1;  // 已写入共识序列，计数从 1 开始
+        std::size_t file_idx = 0;
+
+        // 3. 逐个处理每个 SAM 文件
+        for (const auto& sam_path : sam_paths) {
+            // 打开当前 SAM 文件
+            // 说明：
+            // - 每个 SamReader 独立打开和关闭
+            // - 使用 RAII 确保文件在处理完毕后自动关闭
+            // - 如果文件打开失败，会抛出异常并中止合并
+            seq_io::SamReader reader(sam_path);
+
+            // 逐条读取并追加写入
+            seq_io::SeqRecord rec;
+            std::size_t file_count = 0;
+
+            while (reader.next(rec)) {
+                // 写入 FASTA 格式（只保留 id 和 seq，丢弃 qual）
+                writer.writeFasta(rec);
+                ++file_count;
+                ++total_count;
+            }
+
+            // 调试信息：记录每个文件的处理进度
+            #ifdef _DEBUG
+            spdlog::debug("mergeConsensusAndSamToFasta: processed file {} ({}/{}): {} records from {}",
+                         file_idx + 1, file_idx + 1, sam_paths.size(), file_count, sam_path.string());
+            #endif
+
+            ++file_idx;
+        }
+
+        // 4. 确保所有数据已刷新到磁盘
+        writer.flush();
+
+        // 调试信息：记录合并统计
+        #ifdef _DEBUG
+        spdlog::debug("mergeConsensusAndSamToFasta: merged {} SAM files ({} total records) to {}",
+                     sam_paths.size(), total_count, fasta_path.string());
+        #endif
+
+        return total_count;
+    }
+
+    // ------------------------------------------------------------------
     // 主函数：alignOneQueryToRef
     // 功能：对单个query执行比对并写入SAM文件
     //
@@ -300,21 +373,39 @@ namespace align {
         FilePath result_dir = work_dir / RESULTS_DIR;
 
         bool using_other_align_insertion = true;
+
+        FilePath aligned_insertion_fasta = result_dir / "aligned_insertion.fasta";
+
         if (using_other_align_insertion)
         {
-            // 把insertion的sam文件合并为fasta
+            // 将所有 insertion SAM 文件路径收集到一个 vector
             std::vector<FilePath> insertion_sam_paths;
             for (const auto& path : outs_with_insertion_path)
             {
                 insertion_sam_paths.push_back(path);
             }
-            FilePath insertion_fasta_path = result_dir / "all_insertion_sequences.fasta";
 
-            // 对于insertion_fasta_path, 如果keep_first_length为true，把ref_seq[0]先写入，然后再写入其他序列
-            // 否则先把consensus_seq写入，然后再写入其他序列
+            // 定义输出 FASTA 文件路径
+            FilePath insertion_fasta_path = result_dir / "all_insertion.fasta";
 
-            seq_io::mergeSamToFasta(insertion_sam_paths, insertion_fasta_path, 80);
+            // 调用辅助函数：将共识序列和所有 SAM 文件合并为一个 FASTA 文件
+            // 说明：
+            // 1. 该函数会先写入共识序列（consensus_seq）
+            // 2. 然后逐个读取 SAM 文件并提取序列追加写入
+            // 3. 使用同一个 SeqWriter 实例，避免追加模式的复杂性
+            // 4. 返回值为合并的总序列数（包括共识序列）
+            const std::size_t total_sequences = mergeConsensusAndSamToFasta(
+                insertion_sam_paths,
+                insertion_fasta_path,
+                80  // FASTA 行宽
+            );
 
+            #ifdef _DEBUG
+            spdlog::info("mergeAlignedResults: merged {} sequences (1 consensus + {} from SAM files) to {}",
+                        total_sequences, total_sequences - 1, insertion_fasta_path.string());
+            #endif
+
+            alignConsensusSequence(insertion_fasta_path, aligned_insertion_fasta, msa_cmd, threads);
         }
         else
         {

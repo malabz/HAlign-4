@@ -214,6 +214,25 @@ namespace align {
         void writeSamRecord(const seq_io::SeqRecord& q, const cigar::Cigar_t& cigar,
                            std::string_view ref_name, seq_io::SeqWriter& out) const;
 
+        // ------------------------------------------------------------------
+        // 辅助函数：mergeConsensusAndSamToFasta
+        // 功能：将共识序列和多个 SAM 文件合并为一个 FASTA 文件
+        // 说明：
+        // 1. 先写入共识序列（consensus_seq）到 FASTA 文件
+        // 2. 然后逐个读取 SAM 文件，提取序列并追加写入
+        // 3. 使用同一个 SeqWriter，避免追加模式的复杂性
+        // 4. 流式处理，内存占用与文件数量和大小无关
+        // 参数：
+        //   - sam_paths: 输入 SAM 文件路径列表
+        //   - fasta_path: 输出 FASTA 文件路径
+        //   - line_width: FASTA 每行宽度（默认 80）
+        // 返回：合并的总序列数（包括共识序列）
+        // ------------------------------------------------------------------
+        std::size_t mergeConsensusAndSamToFasta(
+            const std::vector<FilePath>& sam_paths,
+            const FilePath& fasta_path,
+            std::size_t line_width = 80) const;
+
         FilePath work_dir;
         seq_io::SeqRecords ref_sequences;
         mash::Sketches ref_sketch;

@@ -347,34 +347,6 @@ namespace seq_io
     // ------------------------------------------------------------------
     void convertSamToFasta(const FilePath& sam_path, const FilePath& fasta_path, std::size_t line_width = 80);
 
-    // ------------------------------------------------------------------
-    // 函数：mergeSamToFasta
-    // 功能：读取多个 SAM 文件并合并转换为单个 FASTA 文件
-    //
-    // 说明：
-    // 1. 按顺序读取 sam_paths 中的每个 SAM 文件
-    // 2. 提取所有 QNAME 和 SEQ 字段，追加写入到同一个 FASTA 文件
-    // 3. 自动跳过所有 SAM header 行（以 '@' 开头）
-    // 4. 支持大规模文件高效合并（使用缓冲区优化）
-    // 5. 如果 sam_paths 为空，则创建空的 FASTA 文件
-    //
-    // 参数：
-    //   - sam_paths: 输入 SAM 文件路径列表（按顺序处理）
-    //   - fasta_path: 输出 FASTA 文件路径
-    //   - line_width: FASTA 每行宽度（默认 80，0 表示不换行）
-    //
-    // 性能：
-    // - 使用 8MiB 输入/输出缓冲区，减少 I/O 系统调用
-    // - 流式处理，逐文件读取并追加写入，内存占用与文件数量和大小无关
-    // - 复杂度：O(N)，N 为所有 SAM 文件的总记录数
-    //
-    // 异常：文件打开失败或解析错误时抛出 std::runtime_error
-    //
-    // 示例：
-    //   std::vector<FilePath> sam_files = {"thread0.sam", "thread1.sam", "thread2.sam"};
-    //   mergeSamToFasta(sam_files, "merged.fasta", 80);
-    // ------------------------------------------------------------------
-    void mergeSamToFasta(const std::vector<FilePath>& sam_paths, const FilePath& fasta_path, std::size_t line_width = 80);
 
     // ------------------------------------------------------------------
     // 函数：makeSamRecord

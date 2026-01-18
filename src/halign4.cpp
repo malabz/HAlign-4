@@ -156,29 +156,7 @@ int main(int argc, char** argv) {
             return 0;
         }
 
-        // ---------------- 共识生成阶段（计算密集/内存密集） ----------------
-        // 说明：generateConsensusSequence 可能有多种实现（单线程/多线程/双缓冲/批处理/SoA），
-        // 这里调用的是现有命名空间下的实现并传入线程数。实现应当考虑如下优化点：
-        // - 按批读取对齐序列，避免一次性把整个文件加载到内存；
-        // - 对每个位置进行并行计数（按列并行或线程本地计数后合并）以避免频繁原子操作与 false sharing；
-        // - 使用 SoA（Structure-of-Arrays）便于向量化与缓存友好；
-        // - 在 Release 模式启用 -O3 与 -march=native 等编译器优化，并根据目标架构调整线程亲和性（affinity）；
-        // - 记录运行时间以便基准分析。
-        // const std::size_t batch_size = 4096; // 可调：每轮处理的序列数（若实现使用批次）；对内存与并发有直接影响
-        // spdlog::info("Starting consensus generation (double-buffered), batch_size={}...", batch_size);
-        // auto t_start = std::chrono::steady_clock::now();
-        // std::string consensus_string = consensus::generateConsensusSequence(
-        //     consensus_aligned_file,
-        //     consensus_file,
-        //     consensus_json_file,
-        //     0, // 不限制数量
-        //     opt.threads,
-        //     batch_size
-        // );
-        //
-        // auto t_end = std::chrono::steady_clock::now();
-        // double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
-        // spdlog::info("Consensus generation finished, elapsed: {:.3f} s", elapsed);
+
 
         // ---------------- 比对阶段（使用 RefAligner） ----------------
         // 说明：
