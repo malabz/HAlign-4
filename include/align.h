@@ -3,6 +3,8 @@
 #include "utils.h"
 #include "mash.h"
 #include "seed.h"
+
+#include <unordered_map>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -62,6 +64,62 @@ namespace cigar
     //   输出："100M5I95M"
     // ------------------------------------------------------------------
     std::string cigarToString(const Cigar_t& cigar);
+
+    // ------------------------------------------------------------------
+    // 函数：alignQueryToRef
+    // 功能：根据 CIGAR 操作对 query 序列插入 gap 字符（'-'），使其与参考序列对齐
+    //
+    // ------------------------------------------------------------------
+    // 函数：alignQueryToRef
+    // 功能：根据 CIGAR 操作对 query 序列插入 gap 字符（'-'），使其与参考序列对齐
+    //
+    // **关键特性：保留原有 gap 字符**
+    // - 输入 query 中已存在的 gap 字符（'-'）会被当作普通碱基处理（不删除、不特殊对待）
+    // - 只根据 CIGAR 操作在适当位置插入新的 gap
+    // - 这对于多次比对场景（MSA）或处理已经部分对齐的序列非常有用
+    //
+    // 参数：
+    //   - query: 待插空的查询序列（会被原地修改）
+    //            注意：如果输入序列已包含 gap 字符（'-'），会被保留并当作普通字符处理
+    //   - cigar: CIGAR 操作序列（压缩形式）
+    //
+    // CIGAR 操作语义：
+    //   - M/=/X (match/mismatch): query 和 ref 都消耗，拷贝原字符（**包括原有 gap**）
+    //   - I (insertion): query 相对 ref 的插入，只消耗 query，拷贝原字符（**包括原有 gap**）
+    //   - D (deletion): query 相对 ref 的缺失，只消耗 ref，插入新 gap
+    //   - S (soft clip): query 中存在但未比对的部分，拷贝原字符（**包括原有 gap**）
+    //   - H (hard clip): 已从 query 中移除，不处理
+    //
+    // 算法说明：
+    //   1. 预计算对齐后的总长度（原长度 + 所有 D 操作的长度）
+    //   2. 从后往前构建对齐序列，避免频繁插入导致的 O(N²) 复杂度
+    //   3. 原有的 gap 字符（'-'）会被当作普通字符处理，与 A/C/G/T 等碱基无区别
+    //
+    // 性能：
+    //   - 时间复杂度：O(M + N)，M 为 CIGAR 操作数，N 为 query 长度（**包括原有 gap**）
+    //   - 空间复杂度：O(N)，需要临时存储原始 query
+    //   - 内存分配次数：2 次（移动原序列 + 分配新空间）
+    //   - 性能优化：移动语义、从后往前填充、单次内存分配、cache 友好
+    //
+    // 示例1（不含原有 gap，标准场景）：
+    //   query = "ACGT", cigar = "2M1D2M"
+    //   结果: query = "AC-GT"
+    //
+    // 示例2（包含原有 gap，MSA 场景）：
+    //   query = "A-CG-T", cigar = "2M1D2M2M"
+    //   说明：2M 消耗 "A-"（包括原有 gap），1D 插入新 gap，2M 消耗 "CG"，2M 消耗 "-T"
+    //   结果: query = "A--CG-T"（长度 7 = 6 + 1个新gap）
+    //
+    // 异常：
+    //   - 如果 CIGAR 操作超出 query 长度，会触发断言（Debug 模式）
+    //   - 不支持的 CIGAR 操作符会抛出 std::runtime_error
+    //
+    // 使用场景：
+    //   - 标准场景：输入序列不含 gap，根据 CIGAR 插入 gap
+    //   - MSA 场景：输入序列已有 gap（来自之前的比对），需要根据新 CIGAR 调整对齐
+    //   - 迭代比对：多次比对同一序列，每次都保留之前的 gap 并插入新 gap
+    // ------------------------------------------------------------------
+    void alignQueryToRef(std::string& query, const Cigar_t& cigar);
 }
 
 namespace align {
@@ -232,6 +290,36 @@ namespace align {
             const std::vector<FilePath>& sam_paths,
             const FilePath& fasta_path,
             std::size_t line_width = 80) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：parseAlignedReferencesToCigar
+        // 功能：读取 MSA 对齐后的参考序列文件，生成每个序列的 CIGAR
+        //
+        // 说明：
+        // - 这个 CIGAR 记录的是多序列比对矩阵中，哪些位置是碱基（M），哪些是 gap（D）
+        // - 对每个参考序列：碱基 -> M，gap（'-'） -> D
+        // - 使用游程编码压缩（例如 10 个连续 M -> "10M"）
+        //
+        // 参数：
+        //   - aligned_fasta_path: MSA 对齐后的 FASTA 文件路径
+        //
+        // 返回：
+        //   std::unordered_map<std::string, cigar::Cigar_t>
+        //   - key: 参考序列 ID
+        //   - value: CIGAR（只包含 M 和 D）
+        //
+        // 示例：
+        //   输入文件：
+        //     >ref1
+        //     ATC-ATCG  （位置 3 是 gap）
+        //     >ref2
+        //     ATCGATC-  （位置 7 是 gap）
+        //   输出：
+        //     ref_aligned_map["ref1"] = [3M, 1D, 4M]  -> "3M1D4M"
+        //     ref_aligned_map["ref2"] = [7M, 1D]      -> "7M1D"
+        // ------------------------------------------------------------------
+        std::unordered_map<std::string, cigar::Cigar_t> parseAlignedReferencesToCigar(
+            const FilePath& aligned_fasta_path) const;
 
         FilePath work_dir;
         seq_io::SeqRecords ref_sequences;

@@ -176,5 +176,191 @@ std::string cigarToString(const Cigar_t& cigar)
     return result;
 }
 
+// ------------------------------------------------------------------
+// 函数：alignQueryToRef
+// 功能：根据 CIGAR 操作对 query 序列插入 gap 字符（'-'），使其与参考序列对齐
+//
+// **关键特性：保留原有 gap 字符**
+// - 输入 query 中已存在的 gap 字符（'-'）会被当作普通碱基处理（不删除、不特殊对待）
+// - 只根据 CIGAR 操作在适当位置插入新的 gap
+// - 例如：query = "A-CG-T"，CIGAR = "2M1D2M2M" 时：
+//   * 2M 消耗 "A-"（包括原有 gap），拷贝到输出
+//   * 1D 插入新 gap "-"
+//   * 2M 消耗 "CG"，拷贝到输出
+//   * 2M 消耗 "-T"（包括原有 gap），拷贝到输出
+//   * 结果："A--CG-T"（长度 7 = 6 + 1个新gap）
+//
+// 实现说明：
+// 1. 预计算对齐后的总长度（遍历 CIGAR，累加所有操作对应的对齐序列长度）
+// 2. 使用"从后往前"填充策略，避免频繁插入导致的 O(N²) 复杂度
+// 3. 算法核心：
+//    - 先将 query 移动到临时变量（避免拷贝，O(1) 复杂度）
+//    - 将 query resize 到最终长度，预填充为 gap 字符 '-'（O(N) 复杂度，单次分配）
+//    - 从后往前遍历 CIGAR，根据操作类型决定是拷贝原字符（包括原有 gap）还是保持新 gap
+// 4. 复杂度：O(M + N)，M 为 CIGAR 操作数，N 为 query 长度（包括原有 gap）
+//
+// CIGAR 操作处理逻辑：
+// - M/=/X: query 和 ref 都消耗，拷贝原 query 字符（**包括原有 gap**）
+// - I: query 相对 ref 的插入，只消耗 query，拷贝原 query 字符（**包括原有 gap**）
+// - D: query 相对 ref 的缺失，只消耗 ref，保持新插入的 gap 字符（已预填充）
+// - S: soft clip，拷贝原 query 字符（**包括原有 gap**）
+// - H: hard clip，不处理（序列已不存在）
+//
+// 性能优化：
+// - 只遍历 CIGAR 两次（第一次计算长度 O(M)，第二次填充 O(M+N)）
+// - 单次内存分配（assign），避免多次 resize/reserve
+// - 从后往前填充，利用局部性原理，cache 友好
+// - 移动语义减少内存拷贝
+// ------------------------------------------------------------------
+void alignQueryToRef(std::string& query, const Cigar_t& cigar)
+{
+    // 边界情况：空序列或空 CIGAR，直接返回
+    if (query.empty() || cigar.empty()) {
+        return;
+    }
+    // ------------------------------------------------------------------
+    // 步骤1：计算对齐后的总长度
+    // 说明：遍历 CIGAR，累加所有会消耗 ref 位置的操作长度
+    //       - M/=/X/D: 消耗 ref，累加到 aligned_length
+    //       - I/S/H: 不消耗 ref，也需要累加（因为 query 中存在）
+    // ------------------------------------------------------------------
+    std::size_t aligned_length = 0;
+    std::size_t query_consumed = 0;  // 记录 CIGAR 会消耗的 query 长度（用于校验）
+
+    for (const auto c : cigar) {
+        char op;
+        std::uint32_t len;
+        intToCigar(c, op, len);
+
+        // 计算对齐后的长度（包括 gap）
+        if (op == 'M' || op == '=' || op == 'X' || op == 'D' || op == 'I' || op == 'S') {
+            aligned_length += len;
+        }
+        // H 操作不占用空间（已从序列中移除）
+
+        // 记录会消耗 query 的操作（用于后续校验）
+        if (op == 'M' || op == '=' || op == 'X' || op == 'I' || op == 'S') {
+            query_consumed += len;
+        }
+    }
+
+    // 边界情况：空 CIGAR（所有操作都是 H），直接返回
+    if (aligned_length == 0) {
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // 校验：CIGAR 消耗的 query 长度必须与原始 query 长度一致
+    // 说明：
+    // - 原始 query 包含已存在的 gap 字符（'-'），这些 gap 也会被 CIGAR 消耗
+    // - 例如：query = "A-CG"，CIGAR = "4M" 是合法的（消耗 4 个字符，包括 1 个原有 gap）
+    // - 如果长度不匹配，说明 CIGAR 与 query 不一致（可能是外部调用错误）
+    // ------------------------------------------------------------------
+    #ifdef _DEBUG
+    assert(query_consumed == query.size() &&
+           "CIGAR 操作消耗的 query 长度与原始长度不匹配（包括原有 gap）");
+    #endif
+
+    // ------------------------------------------------------------------
+    // 步骤2：从后往前构建对齐序列（避免频繁插入导致的 O(N²) 复杂度）
+    // 说明：
+    // 1. 先将 query 移动到临时变量（避免拷贝，利用移动语义）
+    // 2. 将 query resize 到最终长度，预填充为 gap 字符 '-'（新插入的 gap）
+    // 3. 从后往前遍历 CIGAR，根据操作类型决定是拷贝原字符（包括原有 gap）还是保持新 gap
+    // 4. aligned_pos：对齐序列的写入位置（从后往前递减）
+    // 5. query_pos：原始 query 的读取位置（从后往前递减）
+    // 注意：原有的 gap 字符（'-'）会被当作普通字符拷贝
+    // ------------------------------------------------------------------
+    const std::string original_query = std::move(query);  // 移动语义，避免拷贝
+    query.assign(aligned_length, '-');                    // 预分配空间，填充新 gap
+
+    std::size_t aligned_pos = aligned_length;             // 对齐序列的写入位置（从末尾开始）
+    std::size_t query_pos = original_query.size();        // 原始序列的读取位置（从末尾开始）
+
+    // ------------------------------------------------------------------
+    // 步骤3：从后往前遍历 CIGAR，填充对齐序列
+    // 复杂度：O(M + N)，M 为 CIGAR 操作数，N 为 query 长度（包括原有 gap）
+    // 说明：原有的 gap 字符（'-'）会被当作普通字符处理，与 A/C/G/T 等碱基无区别
+    // ------------------------------------------------------------------
+    for (auto it = cigar.rbegin(); it != cigar.rend(); ++it) {
+        char op;
+        std::uint32_t len;
+        intToCigar(*it, op, len);
+
+        if (op == 'M' || op == '=' || op == 'X') {
+            // Match/Mismatch：拷贝原 query 字符（包括原有 gap）
+            // 说明：这些操作消耗 query 和 ref，将原序列字符拷贝到对齐序列
+            //       如果原序列包含 gap 字符（'-'），也会被拷贝
+            #ifdef _DEBUG
+            assert(query_pos >= len && "CIGAR M/=/X 操作超出 query 长度");
+            assert(aligned_pos >= len && "对齐位置越界");
+            #endif
+
+            for (std::uint32_t i = 0; i < len; ++i) {
+                query[--aligned_pos] = original_query[--query_pos];
+            }
+        } else if (op == 'I') {
+            // Insertion：拷贝原 query 字符（包括原有 gap）
+            // 说明：query 相对 ref 的插入，只消耗 query，将原序列字符拷贝到对齐序列
+            //       如果原序列包含 gap 字符（'-'），也会被拷贝
+            #ifdef _DEBUG
+            assert(query_pos >= len && "CIGAR I 操作超出 query 长度");
+            assert(aligned_pos >= len && "对齐位置越界");
+            #endif
+
+            for (std::uint32_t i = 0; i < len; ++i) {
+                query[--aligned_pos] = original_query[--query_pos];
+            }
+        } else if (op == 'D') {
+            // Deletion：保持新插入的 gap 字符
+            // 说明：query 相对 ref 的缺失，不消耗 query，跳过（已在 assign 时预填充 '-'）
+            //       这里插入的是新 gap，与原序列中已存在的 gap 无关
+            #ifdef _DEBUG
+            assert(aligned_pos >= len && "CIGAR D 操作超出对齐序列长度");
+            #endif
+
+            aligned_pos -= len;  // 跳过新插入的 gap 字符（已在 assign 时填充）
+        } else if (op == 'S') {
+            // Soft Clipping：拷贝原 query 字符（包括原有 gap）
+            // 说明：query 中存在但未比对的部分，将原序列字符拷贝到对齐序列
+            //       如果原序列包含 gap 字符（'-'），也会被拷贝
+            #ifdef _DEBUG
+            assert(query_pos >= len && "CIGAR S 操作超出 query 长度");
+            assert(aligned_pos >= len && "对齐位置越界");
+            #endif
+
+            for (std::uint32_t i = 0; i < len; ++i) {
+                query[--aligned_pos] = original_query[--query_pos];
+            }
+        } else if (op == 'H') {
+            // Hard Clipping：不处理
+            // 说明：已从 query 中移除，不消耗 query，也不插入字符
+            // 无操作
+        } else if (op == 'N' || op == 'P') {
+            // N (skipped region) / P (padding)：当作 deletion 处理
+            // 说明：这些操作在典型的 alignment 中很少见，保守处理为新 gap
+            #ifdef _DEBUG
+            assert(aligned_pos >= len && "CIGAR N/P 操作超出对齐序列长度");
+            #endif
+
+            aligned_pos -= len;  // 保持新插入的 gap 字符
+        } else {
+            // 未知操作符：抛出异常
+            throw std::runtime_error(
+                std::string("alignQueryToRef: 不支持的 CIGAR 操作符 '") + op + "'"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 步骤4：验证对齐结果（仅在 Debug 模式下）
+    // 说明：确保所有 query 字符（包括原有 gap）都已被处理，且对齐序列已完全填充
+    // ------------------------------------------------------------------
+    #ifdef _DEBUG
+    assert(query_pos == 0 && "CIGAR 操作未完全消耗 query 序列（包括原有 gap）");
+    assert(aligned_pos == 0 && "对齐序列未完全填充");
+    #endif
+}
+
 } // namespace cigar
 

@@ -12,6 +12,8 @@
 #include <vector>
 #include <omp.h>
 
+#include <unordered_map>
+
 namespace align {
 
     // ------------------------------------------------------------------
@@ -31,7 +33,7 @@ namespace align {
           sketch_size(sketch_size),
           noncanonical(noncanonical),
           threads(threads),
-          msa_cmd(std::move(msa_cmd)),          // 使用 move 语义避免拷贝
+          msa_cmd(msa_cmd),          // 使用 move 语义避免拷贝
           keep_first_length(keep_first_length),
           keep_all_length(keep_all_length)
     {
@@ -362,6 +364,101 @@ namespace align {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 辅助函数：parseAlignedReferencesToCigar
+    // 功能：读取 MSA 对齐后的参考序列文件，解析每个参考序列与共识序列的对齐关系
+    //
+    // 实现说明：
+    // 1. 流式读取 FASTA 文件，内存占用 O(L)（L 为序列长度）
+    // 2. 对于每个后续序列，逐位置比较：
+    //    - ref 为碱基（非 '-'）：记录 M（匹配/错配）
+    //    - ref 为 gap（'-'）：记录 D（删除）
+    // 3. 使用游程编码压缩连续相同操作（例如 10 个连续 M -> "10M"）
+    //
+    // 性能优化：
+    // - 流式处理，只保存共识序列和当前参考序列
+    // - 预分配 CIGAR 容器，减少内存重新分配
+    // - 使用游程编码，压缩 CIGAR 大小
+    // ------------------------------------------------------------------
+    std::unordered_map<std::string, cigar::Cigar_t> RefAligner::parseAlignedReferencesToCigar(
+        const FilePath& aligned_fasta_path) const
+    {
+        std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map;
+
+        // ------------------------------------------------------------------
+        // 步骤1：打开 FASTA 文件，跳过第一条序列（共识序列）
+        // ------------------------------------------------------------------
+        seq_io::KseqReader reader(aligned_fasta_path);
+        seq_io::SeqRecord rec;
+
+
+        // ------------------------------------------------------------------
+        // 步骤2：流式读取每个参考序列，逐个生成 CIGAR
+        // 规则：碱基 -> M，gap -> D
+        // ------------------------------------------------------------------
+        std::size_t ref_count = 0;
+
+        while (reader.next(rec)) {
+            cigar::Cigar_t cigar;
+            cigar.reserve(20);  // 预分配空间
+
+            char current_op = '\0';           // 当前操作类型
+            std::uint32_t current_len = 0;    // 当前操作的连续长度
+
+            // 遍历序列，生成 CIGAR（游程编码）
+            for (const char base : rec.seq) {
+                // 判断操作类型：碱基 -> M，gap -> D
+                const char op = (base == '-') ? 'D' : 'M';
+
+                // 游程编码：压缩连续相同操作
+                if (op == current_op) {
+                    ++current_len;
+                } else {
+                    // 操作类型变化：先写入上一个操作
+                    if (current_op != '\0' && current_len > 0) {
+                        cigar.push_back(cigar::cigarToInt(current_op, current_len));
+                    }
+
+                    // 开始新操作
+                    current_op = op;
+                    current_len = 1;
+                }
+            }
+
+            // 写入最后一个操作
+            if (current_op != '\0' && current_len > 0) {
+                cigar.push_back(cigar::cigarToInt(current_op, current_len));
+            }
+
+            // 存入 map
+            ref_aligned_map[rec.id] = std::move(cigar);
+            ++ref_count;
+
+            #ifdef _DEBUG
+            const std::string cigar_str = cigar::cigarToString(ref_aligned_map[rec.id]);
+            spdlog::debug("parseAlignedReferencesToCigar: {} -> CIGAR: {}",
+                         rec.id, cigar_str);
+            #endif
+        }
+
+        // ------------------------------------------------------------------
+        // 步骤3：验证至少有一条参考序列
+        // ------------------------------------------------------------------
+        if (ref_count == 0) {
+            throw std::runtime_error(
+                "parseAlignedReferencesToCigar: 文件中只有共识序列，没有参考序列: " +
+                aligned_fasta_path.string()
+            );
+        }
+
+        #ifdef _DEBUG
+        spdlog::info("parseAlignedReferencesToCigar: 成功解析 {} 个参考序列的 CIGAR（从 {} 中）",
+                    ref_count, aligned_fasta_path.string());
+        #endif
+
+        return ref_aligned_map;
+    }
+
     void RefAligner::mergeAlignedResults(const FilePath& aligned_consensus_path, const std::string& msa_cmd)
     {
         // 将多个线程的 SAM 文件合并为一个文件
@@ -400,10 +497,10 @@ namespace align {
                 80  // FASTA 行宽
             );
 
-            #ifdef _DEBUG
+#ifdef _DEBUG
             spdlog::info("mergeAlignedResults: merged {} sequences (1 consensus + {} from SAM files) to {}",
                         total_sequences, total_sequences - 1, insertion_fasta_path.string());
-            #endif
+#endif
 
             alignConsensusSequence(insertion_fasta_path, aligned_insertion_fasta, msa_cmd, threads);
         }
@@ -411,6 +508,34 @@ namespace align {
         {
 
         }
+
+        // 读取比对好参考序列文件，获得每个参考序列的和共识序列的比对结果，结果里应该只有M和D
+        std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map;
+        std::unordered_map<std::string, cigar::Cigar_t> insertion_aligned_map;
+        FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
+
+        // 调用辅助函数：解析 MSA 对齐文件，生成每个参考序列与共识序列的 CIGAR
+        // 说明：
+        // 1. consensus_aligned_file 是 MSA 对齐后的 FASTA 文件
+        // 2. 第一条序列为共识序列（consensus）
+        // 3. 后续序列为参考序列（ref_sequences）
+        // 4. 返回的 map 包含每个参考序列 ID 到其 CIGAR 的映射
+        // 5. CIGAR 只包含 M（匹配/错配）和 D（删除）操作
+        ref_aligned_map = parseAlignedReferencesToCigar(consensus_aligned_file);
+        insertion_aligned_map = parseAlignedReferencesToCigar(aligned_insertion_fasta);
+
+#ifdef _DEBUG
+        spdlog::info("mergeAlignedResults: 成功解析 {} 个参考序列的对齐关系",
+                    ref_aligned_map.size());
+        spdlog::info("mergeAlignedResults: 成功解析 {} 个插入序列的对齐关系",
+                    insertion_aligned_map.size());
+#endif
+
+        FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / "final_aligned.fasta";
+        seq_io::SeqWriter final_writer(final_output_path);
+
+        // 首先先把consensus_aligned_file写入最终文件
+        // 如果keep_all_length为真，则正常把所有碱基都
     }
 
 } // namespace align
