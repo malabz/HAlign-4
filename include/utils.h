@@ -116,6 +116,44 @@ namespace seq_io
     };
     using SeqRecords     = std::vector<seq_io::SeqRecord>;
 
+    // ------------------------------------------------------------------
+    // SamRecord：用于在内存中表示一条 SAM 比对记录
+    // 字段语义（遵循 SAM 格式标准）：
+    //  - qname: Query 名称（QNAME 列）
+    //  - flag: SAM flag 位标志（FLAG 列，例如 0=正向未配对，16=反向链等）
+    //  - rname: Reference 序列名称（RNAME 列，"*"表示未比对）
+    //  - pos: 1-based 比对起始位置（POS 列，0 或 "*" 表示未知）
+    //  - mapq: Mapping quality（MAPQ 列，0-255，255 表示未知）
+    //  - cigar: CIGAR 字符串（CIGAR 列，例如 "100M5I95M"，"*"表示未知）
+    //  - rnext: Mate/next reference 名称（RNEXT 列，"="表示相同，"*"表示未知）
+    //  - pnext: Mate 1-based 位置（PNEXT 列）
+    //  - tlen: Template length（TLEN 列，有符号整数，0 表示未知）
+    //  - seq: Query 序列（SEQ 列）
+    //  - qual: Query 质量字符串（QUAL 列，"*"表示未知）
+    //  - opt: 可选 TAG 字段（OPT 列，从第 12 列开始的所有内容）
+    //
+    // 设计说明：
+    // - 所有字符串字段使用 std::string（拥有字段所有权，无生命周期问题）
+    // - 适用于 SamReader/SamWriter 的读写和长期存储
+    // - 字段默认值遵循 SAM 规范："*" 表示未知/缺失
+    // - 性能说明：使用 std::string 会有字符串拷贝开销，但换来更简单的生命周期管理
+    // ------------------------------------------------------------------
+    struct SamRecord
+    {
+        std::string qname;
+        std::uint16_t flag = 0;
+        std::string rname = "*";
+        std::uint32_t pos = 0;     // 1-based; 0 means '*'
+        std::uint8_t mapq = 0;
+        std::string cigar = "*";
+        std::string rnext = "*";
+        std::uint32_t pnext = 0;
+        std::int32_t tlen = 0;
+        std::string seq = "*";
+        std::string qual = "*";
+        std::string opt;  // 可选 TAG 字段（包含前导 '\t' 或不包含都可）
+    };
+
     // makeCleanTable / clean_table:
     // - 用于把任意字符映射到一个受限的碱基字符集合（'A','C','G','T','U','N','-'），
     // - 实现为 256 大小的查表（针对 unsigned char），避免运行时的分支/条件判断，极大提升批量清洗性能；
@@ -233,24 +271,6 @@ namespace seq_io
         // ------------------------- SAM -------------------------
         void writeSamHeader(std::string_view header_text);
 
-        // 最小 SAM 记录（不依赖全项目的 aln 类型，减少耦合）：
-        // QNAME, FLAG, RNAME, POS, MAPQ, CIGAR, RNEXT, PNEXT, TLEN, SEQ, QUAL
-        struct SamRecord
-        {
-            std::string_view qname;
-            std::uint16_t flag = 0;
-            std::string_view rname = "*";
-            std::uint32_t pos = 0;     // 1-based; 0 means '*'
-            std::uint8_t mapq = 0;
-            std::string_view cigar = "*";
-            std::string_view rnext = "*";
-            std::uint32_t pnext = 0;
-            std::int32_t tlen = 0;
-            std::string_view seq = "*";
-            std::string_view qual = "*";
-            std::string_view opt = {}; // 可选 TAG 字段（包含前导 '\t' 或不包含都可）
-        };
-
         void writeSam(const SamRecord& r);
 
         // flush():
@@ -282,20 +302,21 @@ namespace seq_io
 
     // ------------------------------------------------------------------
     // 类：SamReader
-    // 功能：读取 SAM 文件并解析为 SeqRecord
+    // 功能：读取 SAM 文件并解析为 SamRecord
     //
     // 说明：
     // 1. SAM 格式为制表符分隔的文本文件，每行包含一条比对记录
     // 2. SAM 文件可包含以 '@' 开头的 header 行，本类会自动跳过
-    // 3. 读取时提取 QNAME（query name）、SEQ（序列）、QUAL（质量值）字段
+    // 3. 读取时解析所有 SAM 必需字段（QNAME、FLAG、RNAME、POS、MAPQ、CIGAR、SEQ、QUAL 等）
     // 4. 支持大文件高效读取（使用大缓冲区优化）
     //
     // 性能说明：
     // - 使用 std::getline 逐行读取，配合大缓冲区减少系统调用
     // - 使用 string_view 进行字段分割，避免不必要的字符串拷贝
     // - 默认缓冲区大小 8MiB，适合大规模 SAM 文件
+    // - 内部保存字段字符串以确保 string_view 生命周期安全
     // ------------------------------------------------------------------
-    class SamReader : public ISequenceReader
+    class SamReader
     {
     public:
         // 构造函数：打开 SAM 文件并初始化读取器
@@ -304,7 +325,7 @@ namespace seq_io
         //   - buffer_size: 输入缓冲区大小（默认 8MiB）
         explicit SamReader(const FilePath& file_path, std::size_t buffer_size = 8ULL * 1024ULL * 1024ULL);
 
-        ~SamReader() override;
+        ~SamReader();
 
         // 禁止拷贝，允许移动
         SamReader(const SamReader&) = delete;
@@ -312,12 +333,8 @@ namespace seq_io
         SamReader(SamReader&&) noexcept;
         SamReader& operator=(SamReader&&) noexcept;
 
-        // 读取下一条 SAM 记录并解析为 SeqRecord
-        // 返回：
-        //   - true: 成功读取一条记录，rec 被填充
-        //   - false: 到达文件末尾，rec 保持不变
-        // 异常：解析错误时抛出 std::runtime_error
-        bool next(SeqRecord& rec) override;
+
+        bool next(SamRecord& rec);
 
     private:
         struct Impl;
@@ -360,7 +377,7 @@ namespace seq_io
     //   - mapq: mapping quality（默认 60）
     //   - flag: SAM flag（默认 0）
     //
-    // 返回：SeqWriter::SamRecord
+    // 返回：SamRecord（seq_io 命名空间下的独立类型）
     //
     // 说明：
     //   1. 这是一个便捷函数，封装了从 SeqRecord 到 SamRecord 的转换逻辑
@@ -370,7 +387,7 @@ namespace seq_io
     //
     // 性能：O(1)，仅赋值操作，无内存分配
     // ------------------------------------------------------------------
-    SeqWriter::SamRecord makeSamRecord(
+    SamRecord makeSamRecord(
         const SeqRecord& query,
         std::string_view ref_name,
         std::string_view cigar_str,
@@ -378,6 +395,58 @@ namespace seq_io
         std::uint8_t mapq = 60,
         std::uint16_t flag = 0
     );
+
+    // ------------------------------------------------------------------
+    // 函数：samRecordToSeqRecord
+    // 功能：把 SamRecord 中的序列信息（QNAME/SEQ/QUAL）转换为 SeqRecord
+    //
+    // 为什么需要它：
+    // - SamReader::next() 返回的是 SamRecord（字段多，包含所有 SAM 列）
+    // - 但很多后续处理（例如写 FASTA、cleanSequence、与原有代码对接）更习惯使用 SeqRecord
+    // - 这个函数把"从 SamRecord 提取序列"的重复逻辑集中到一处，避免到处写拷贝代码
+    //
+    // 输入：
+    // - sam_rec: SamRecord（通常来自 SamReader::next），其中 qname/seq/qual 为 std::string
+    // - keep_qual: 是否把 qual 拷贝到 SeqRecord（FASTA 场景通常不需要 qual，建议 false）
+    //
+    // 输出：
+    // - 返回一个 SeqRecord：
+    //   - id   = sam_rec.qname
+    //   - desc = ""（SAM 没有 FASTA header 的 desc 概念）
+    //   - seq  = sam_rec.seq
+    //   - qual = (keep_qual ? sam_rec.qual : "")
+    //
+    // 性能与正确性：
+    // - 由于 SamRecord 已经拥有字符串的所有权，这里会发生字符串拷贝
+    // - 复杂度 O(|qname| + |seq| + |qual|)，对大文件通常 IO 才是瓶颈
+    // ------------------------------------------------------------------
+    // 输出：
+    // - 返回一个 SeqRecord：
+    //   - id   = sam_rec.qname
+    //   - desc = ""（SAM 没有 FASTA header 的 desc 概念）
+    //   - seq  = sam_rec.seq
+    //   - qual = (keep_qual ? sam_rec.qual : "")
+    //
+    // 性能与正确性：
+    // - 由于 SamRecord 已经拥有字符串的所有权，这里会发生字符串拷贝
+    // - 复杂度 O(|qname| + |seq| + |qual|)，对大文件通常 IO 才是瓶颈
+    // ------------------------------------------------------------------
+    inline SeqRecord samRecordToSeqRecord(const SamRecord& sam_rec, bool keep_qual = false)
+    {
+        SeqRecord rec;
+        rec.id = sam_rec.qname;
+        rec.desc.clear();
+        rec.seq = sam_rec.seq;
+
+        if (keep_qual) {
+            // SAM 的 qual 可能是 "*"，调用方如需可自行再做过滤。
+            rec.qual = sam_rec.qual;
+        } else {
+            rec.qual.clear();
+        }
+
+        return rec;
+    }
 
 } // namespace seq_io
 

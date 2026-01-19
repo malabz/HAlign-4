@@ -177,6 +177,97 @@ std::string cigarToString(const Cigar_t& cigar)
 }
 
 // ------------------------------------------------------------------
+// stringToCigar：将 SAM 格式的 CIGAR 字符串解析为压缩的 Cigar_t
+//
+// 实现说明：
+// 1. SAM CIGAR 格式：连续的"数字+操作符"对，例如 "100M5I95M"
+// 2. 特殊值 "*"：表示 CIGAR 未知，返回空向量
+// 3. 解析策略：
+//    - 逐字符扫描，遇到数字字符累积为 len
+//    - 遇到操作符字符，将 (len, op) 编码为 CigarUnit 并加入结果
+//    - 自动跳过空白字符（空格、制表符、换行符）
+// 4. 错误处理：
+//    - 操作符前没有数字（len==0）：抛异常
+//    - 未知操作符：抛异常（由 cigarToInt 保证）
+//    - 连续数字但没有操作符（字符串结尾）：抛异常
+//
+// 性能优化：
+// - 预分配 result 空间（cigar_str.size() / 2），减少扩容
+// - 使用原地解析，避免临时字符串
+// - 复杂度 O(N)，N 为字符串长度
+// ------------------------------------------------------------------
+Cigar_t stringToCigar(const std::string& cigar_str)
+{
+    // 1. 特殊值 "*"：表示 CIGAR 未知
+    if (cigar_str.empty() || cigar_str == "*") {
+        return Cigar_t{};
+    }
+
+    // 2. 预分配结果向量（估算：每个操作平均占 2-3 个字符，例如 "5M" 占 2 个字符）
+    Cigar_t result;
+    result.reserve(cigar_str.size() / 2 + 1);
+
+    // 3. 逐字符扫描并解析
+    std::uint32_t current_len = 0;  // 当前累积的长度
+    bool has_digits = false;        // 标记是否已读取到数字
+
+    for (std::size_t i = 0; i < cigar_str.size(); ++i) {
+        const char ch = cigar_str[i];
+
+        // 跳过空白字符（容错处理）
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+            continue;
+        }
+
+        // 如果是数字字符，累积到 current_len
+        if (ch >= '0' && ch <= '9') {
+            has_digits = true;
+
+            // 检查溢出（SAM CIGAR 长度上限为 2^28-1）
+            const std::uint32_t digit = static_cast<std::uint32_t>(ch - '0');
+            if (current_len > (kMaxLen - digit) / 10) {
+                throw std::runtime_error(
+                    "stringToCigar: CIGAR length overflow at position " + std::to_string(i) +
+                    " in string: " + cigar_str);
+            }
+
+            current_len = current_len * 10 + digit;
+        }
+        // 如果是操作符字符，编码当前操作并重置状态
+        else {
+            // 操作符前必须有数字
+            if (!has_digits || current_len == 0) {
+                throw std::runtime_error(
+                    "stringToCigar: invalid CIGAR format - operation '" + std::string(1, ch) +
+                    "' at position " + std::to_string(i) + " has no length in: " + cigar_str);
+            }
+
+            // 将 (len, op) 编码为 CigarUnit
+            // 注意：cigarToInt 会检查操作符是否合法，非法则抛异常
+            try {
+                result.push_back(cigarToInt(ch, current_len));
+            } catch (const std::runtime_error& e) {
+                throw std::runtime_error(
+                    "stringToCigar: invalid operation '" + std::string(1, ch) +
+                    "' at position " + std::to_string(i) + " in: " + cigar_str);
+            }
+
+            // 重置状态，准备解析下一个操作
+            current_len = 0;
+            has_digits = false;
+        }
+    }
+
+    // 4. 检查结尾：如果有未配对的数字（例如 "100M5"），抛异常
+    if (has_digits && current_len > 0) {
+        throw std::runtime_error(
+            "stringToCigar: CIGAR string ends with digits but no operation: " + cigar_str);
+    }
+
+    return result;
+}
+
+// ------------------------------------------------------------------
 // 函数：alignQueryToRef
 // 功能：根据 CIGAR 操作对 query 序列插入 gap 字符（'-'），使其与参考序列对齐
 //
@@ -257,6 +348,7 @@ void alignQueryToRef(std::string& query, const Cigar_t& cigar)
     // - 如果长度不匹配，说明 CIGAR 与 query 不一致（可能是外部调用错误）
     // ------------------------------------------------------------------
     #ifdef _DEBUG
+    int t = query.size();
     assert(query_consumed == query.size() &&
            "CIGAR 操作消耗的 query 长度与原始长度不匹配（包括原有 gap）");
     #endif

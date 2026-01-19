@@ -423,21 +423,21 @@ namespace seq_io
     //
     // 实现说明：
     // 1. 这是一个便捷函数，封装了从 SeqRecord 到 SamRecord 的转换逻辑
-    // 2. 质量值处理：若 query.qual 为空，则使用 SAM 默认值 "*"（已在 SamRecord 定义中初始化）
-    // 3. 所有 string_view 字段直接引用输入参数，生命周期由调用者保证
-    // 4. 性能：O(1)，仅赋值操作，无内存分配或拷贝
+    // 2. 质量值处理：若 query.qual 为空，则使用 SAM 默认值 "*"
+    // 3. 所有字符串字段会被拷贝到 SamRecord 中（使用 std::string）
+    // 4. 性能：O(N)，N 为字符串总长度（需要拷贝字符串）
     //
     // 参数：
-    //   - query: 查询序列的 SeqRecord（必须在 SamRecord 使用期间保持有效）
-    //   - ref_name: 参考序列名称（必须在 SamRecord 使用期间保持有效）
-    //   - cigar_str: CIGAR 字符串（必须在 SamRecord 使用期间保持有效）
+    //   - query: 查询序列的 SeqRecord
+    //   - ref_name: 参考序列名称
+    //   - cigar_str: CIGAR 字符串
     //   - pos: 1-based 比对起始位置（默认 1）
     //   - mapq: mapping quality（默认 60）
     //   - flag: SAM flag（默认 0）
     //
-    // 返回：SeqWriter::SamRecord（所有 string_view 字段引用输入参数）
+    // 返回：SamRecord（所有字段为 std::string）
     // ------------------------------------------------------------------
-    SeqWriter::SamRecord makeSamRecord(
+    SamRecord makeSamRecord(
         const SeqRecord& query,
         std::string_view ref_name,
         std::string_view cigar_str,
@@ -445,21 +445,20 @@ namespace seq_io
         std::uint8_t mapq,
         std::uint16_t flag)
     {
-        // 构建 SAM 记录（所有字段均为 string_view，零拷贝）
-        SeqWriter::SamRecord sam_rec;
-        sam_rec.qname = query.id;      // query 名称（使用 SeqRecord 的 id 字段）
-        sam_rec.flag  = flag;          // SAM flag（0 表示未比对/正向链）
-        sam_rec.rname = ref_name;      // 参考序列名称
-        sam_rec.pos   = pos;           // 1-based 比对起始位置
-        sam_rec.mapq  = mapq;          // mapping quality
-        sam_rec.cigar = cigar_str;     // CIGAR 字符串
-        sam_rec.seq   = query.seq;     // query 序列
+        // 构建 SAM 记录（所有字段使用 std::string，拷贝数据）
+        SamRecord sam_rec;
+        sam_rec.qname = query.id;                                    // 拷贝 query 名称
+        sam_rec.flag  = flag;                                        // SAM flag
+        sam_rec.rname.assign(ref_name.data(), ref_name.size());      // 拷贝参考序列名称
+        sam_rec.pos   = pos;                                         // 1-based 比对起始位置
+        sam_rec.mapq  = mapq;                                        // mapping quality
+        sam_rec.cigar.assign(cigar_str.data(), cigar_str.size());    // 拷贝 CIGAR 字符串
+        sam_rec.seq   = query.seq;                                   // 拷贝 query 序列
 
         // 质量值处理：若 query.qual 不为空，则使用；否则保持默认值 "*"
         if (!query.qual.empty()) {
             sam_rec.qual = query.qual;
         }
-        // 否则使用默认值 "*"（已在 SamRecord 定义中初始化）
 
         return sam_rec;
     }
@@ -477,11 +476,24 @@ namespace seq_io
     // 4. io_buf 用于提升 std::ifstream 的缓冲区大小
     struct SamReader::Impl
     {
-        std::ifstream in_;             // 输入文件流
-        FilePath file_path_;           // 文件路径（用于错误信息）
-        std::string line_buffer_;      // 当前行缓冲区（避免重复分配）
-        char* io_buf_{nullptr};        // 输入缓冲区（用于 setvbuf 优化）
-        std::size_t io_buf_size_{0};   // 缓冲区大小
+        std::ifstream in_;
+        FilePath file_path_;
+        std::string line_buffer_;
+        char* io_buf_{nullptr};
+        std::size_t io_buf_size_{0};
+
+        // ------------------------------------------------------------------
+        // 关键：为了让 next(SamRecord&) 返回的 string_view 在“本次 next 调用之后”仍然有效，
+        // 我们必须把每次解析到的字段拷贝到 SamReader::Impl 的成员字符串中。
+        // 否则 string_view 会指向 line_buffer_，下一次 getline() 就会覆盖，导致悬空引用。
+        // ------------------------------------------------------------------
+        std::string qname_storage_;
+        std::string rname_storage_;
+        std::string cigar_storage_;
+        std::string rnext_storage_;
+        std::string seq_storage_;
+        std::string qual_storage_;
+        std::string opt_storage_;
     };
 
     SamReader::SamReader(const FilePath& file_path, std::size_t buffer_size)
@@ -530,7 +542,7 @@ namespace seq_io
     SamReader::SamReader(SamReader&& other) noexcept = default;
     SamReader& SamReader::operator=(SamReader&& other) noexcept = default;
 
-    bool SamReader::next(SeqRecord& rec)
+    bool SamReader::next(SamRecord& rec)
     {
         if (!impl_ || !impl_->in_) {
             throw std::runtime_error("SamReader is not initialized");
@@ -545,100 +557,119 @@ namespace seq_io
                 continue;
             }
 
-            // SAM 格式：
-            // QNAME\tFLAG\tRNAME\tPOS\tMAPQ\tCIGAR\tRNEXT\tPNEXT\tTLEN\tSEQ\tQUAL\t[OPT...]
-            // 我们只需要提取：
-            // - 字段 0: QNAME (query name)
-            // - 字段 9: SEQ (序列)
-            // - 字段 10: QUAL (质量值，可选)
-
-            // 使用 string_view 进行字段分割（零拷贝）
+            // SAM 必需字段 (11列) + 可选 TAG：
+            // 0:QNAME 1:FLAG 2:RNAME 3:POS 4:MAPQ 5:CIGAR 6:RNEXT 7:PNEXT 8:TLEN 9:SEQ 10:QUAL [11+:OPT]
+            std::array<std::string_view, 11> f{};
             std::size_t field_idx = 0;
             std::size_t start = 0;
-            std::string_view qname, seq, qual;
 
-            for (std::size_t i = 0; i <= line.size(); ++i) {
-                // 到达制表符或行尾
+            for (std::size_t i = 0; i <= line.size() && field_idx < f.size(); ++i) {
                 if (i == line.size() || line[i] == '\t') {
-                    const std::string_view field = line.substr(start, i - start);
-
-                    // 提取关键字段
-                    if (field_idx == 0) {
-                        qname = field;
-                    } else if (field_idx == 9) {
-                        seq = field;
-                    } else if (field_idx == 10) {
-                        qual = field;
-                        break; // 已获取所有需要的字段
-                    }
-
+                    f[field_idx] = line.substr(start, i - start);
                     start = i + 1;
                     ++field_idx;
                 }
             }
 
-            // 检查是否成功提取了必需字段
-            if (qname.empty() || seq.empty()) {
-                throw std::runtime_error("invalid SAM record (missing QNAME or SEQ): " + impl_->file_path_.string());
+            if (field_idx < f.size()) {
+                throw std::runtime_error(
+                    "invalid SAM record (missing required fields): " + impl_->file_path_.string());
             }
 
-            // 填充 SeqRecord
-            // 说明：
-            // - id: QNAME（query 名称）
-            // - desc: 保持为空（SAM 格式不包含描述信息）
-            // - seq: SEQ 字段（序列内容）
-            // - qual: QUAL 字段（质量值，如果为 '*' 则清空）
-            rec.id.assign(qname.data(), qname.size());
-            rec.desc.clear();
-            rec.seq.assign(seq.data(), seq.size());
+            // 11+ 的可选字段：直接保留整个尾巴（不解析 tag 结构，保持轻量）
+            std::string_view opt_fields;
+            if (start < line.size()) {
+                opt_fields = line.substr(start);
+            }
 
-            // 质量值处理：'*' 表示无质量值
-            if (qual.empty() || (qual.size() == 1 && qual[0] == '*')) {
-                rec.qual.clear();
+            // 0: QNAME
+            rec.qname.assign(f[0].data(), f[0].size());
+
+            // 1: FLAG
+            try {
+                rec.flag = static_cast<std::uint16_t>(std::stoul(std::string(f[1])));
+            } catch (...) {
+                throw std::runtime_error("invalid SAM FLAG: " + std::string(f[1]));
+            }
+
+            // 2: RNAME
+            rec.rname.assign(f[2].data(), f[2].size());
+
+            // 3: POS
+            try {
+                rec.pos = static_cast<std::uint32_t>(std::stoul(std::string(f[3])));
+            } catch (...) {
+                throw std::runtime_error("invalid SAM POS: " + std::string(f[3]));
+            }
+
+            // 4: MAPQ
+            try {
+                const unsigned long mapq_val = std::stoul(std::string(f[4]));
+                rec.mapq = static_cast<std::uint8_t>(mapq_val > 255 ? 255 : mapq_val);
+            } catch (...) {
+                throw std::runtime_error("invalid SAM MAPQ: " + std::string(f[4]));
+            }
+
+            // 5: CIGAR
+            rec.cigar.assign(f[5].data(), f[5].size());
+
+            // 6: RNEXT
+            rec.rnext.assign(f[6].data(), f[6].size());
+
+            // 7: PNEXT
+            try {
+                rec.pnext = static_cast<std::uint32_t>(std::stoul(std::string(f[7])));
+            } catch (...) {
+                throw std::runtime_error("invalid SAM PNEXT: " + std::string(f[7]));
+            }
+
+            // 8: TLEN
+            try {
+                rec.tlen = static_cast<std::int32_t>(std::stol(std::string(f[8])));
+            } catch (...) {
+                throw std::runtime_error("invalid SAM TLEN: " + std::string(f[8]));
+            }
+
+            // 9: SEQ
+            rec.seq.assign(f[9].data(), f[9].size());
+
+            // 10: QUAL
+            rec.qual.assign(f[10].data(), f[10].size());
+
+            // OPT
+            if (!opt_fields.empty()) {
+                rec.opt.assign(opt_fields.data(), opt_fields.size());
             } else {
-                rec.qual.assign(qual.data(), qual.size());
+                rec.opt.clear();
             }
 
             return true;
         }
 
-        // 到达文件末尾
         return false;
     }
 
-    // ------------------------------------------------------------------
-    // 函数：convertSamToFasta
-    // 实现说明：
-    // 1. 使用 SamReader 逐条读取 SAM 记录
-    // 2. 使用 SeqWriter 逐条写入 FASTA 格式
-    // 3. 流式处理，内存占用与文件大小无关
-    // ------------------------------------------------------------------
     void convertSamToFasta(const FilePath& sam_path, const FilePath& fasta_path, std::size_t line_width)
     {
-        // 打开输入和输出文件
-        // 说明：
-        // - SamReader 和 SeqWriter 都使用大缓冲区（8MiB）以优化 I/O 性能
-        // - line_width 传递给 SeqWriter，控制 FASTA 输出的每行宽度
         SamReader reader(sam_path);
         SeqWriter writer(fasta_path, line_width);
 
-        // 逐条读取并转换
-        SeqRecord rec;
+        SamRecord sam_rec;
         std::size_t count = 0;
 
-        while (reader.next(rec)) {
-            // 写入 FASTA 格式（只保留 id 和 seq，丢弃 qual）
-            writer.writeFasta(rec);
+        while (reader.next(sam_rec)) {
+            // 关键：SamRecord 的 qname/seq 是 string_view，下一次 next() 可能覆盖。
+            // 因此这里必须拷贝成 SeqRecord（samRecordToSeqRecord 内部做 assign）。
+            const SeqRecord fasta_rec = samRecordToSeqRecord(sam_rec, /*keep_qual=*/false);
+            writer.writeFasta(fasta_rec);
             ++count;
         }
 
-        // 确保所有数据已刷新到磁盘
         writer.flush();
 
-        // 记录转换统计信息（调试模式下输出）
-        #ifdef _DEBUG
+#ifdef _DEBUG
         spdlog::debug("convertSamToFasta: converted {} records from {} to {}", count, sam_path.string(), fasta_path.string());
-        #endif
+#endif
     }
 
 

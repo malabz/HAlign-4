@@ -235,6 +235,135 @@ TEST_SUITE("align") {
         // 对于 99.9% 相似的 10k 序列，应该在合理时间内完成（<100ms）
         CHECK(elapsed < 100.0);
     }
+
+    // ------------------------------------------------------------------
+    // 测试：cigarToString 和 stringToCigar 互逆
+    // ------------------------------------------------------------------
+    TEST_CASE("cigar::cigarToString and stringToCigar - 互逆操作") {
+        // 测试1：标准 CIGAR 字符串
+        SUBCASE("标准 CIGAR") {
+            cigar::Cigar_t original;
+            original.push_back(cigar::cigarToInt('M', 100));
+            original.push_back(cigar::cigarToInt('I', 5));
+            original.push_back(cigar::cigarToInt('M', 95));
+            original.push_back(cigar::cigarToInt('D', 3));
+            original.push_back(cigar::cigarToInt('M', 50));
+
+            // 转换为字符串
+            std::string cigar_str = cigar::cigarToString(original);
+            CHECK(cigar_str == "100M5I95M3D50M");
+
+            // 再转回 Cigar_t
+            cigar::Cigar_t roundtrip = cigar::stringToCigar(cigar_str);
+
+            // 验证互逆
+            REQUIRE(roundtrip.size() == original.size());
+            for (size_t i = 0; i < original.size(); ++i) {
+                CHECK(roundtrip[i] == original[i]);
+            }
+        }
+
+        // 测试2：所有 CIGAR 操作符
+        SUBCASE("所有操作符") {
+            cigar::Cigar_t original;
+            original.push_back(cigar::cigarToInt('M', 10));
+            original.push_back(cigar::cigarToInt('I', 2));
+            original.push_back(cigar::cigarToInt('D', 3));
+            original.push_back(cigar::cigarToInt('N', 100));
+            original.push_back(cigar::cigarToInt('S', 5));
+            original.push_back(cigar::cigarToInt('H', 10));
+            original.push_back(cigar::cigarToInt('P', 1));
+            original.push_back(cigar::cigarToInt('=', 20));
+            original.push_back(cigar::cigarToInt('X', 3));
+
+            std::string cigar_str = cigar::cigarToString(original);
+            cigar::Cigar_t roundtrip = cigar::stringToCigar(cigar_str);
+
+            REQUIRE(roundtrip.size() == original.size());
+            for (size_t i = 0; i < original.size(); ++i) {
+                CHECK(roundtrip[i] == original[i]);
+            }
+        }
+
+        // 测试3：特殊值 "*"
+        SUBCASE("特殊值 *") {
+            cigar::Cigar_t empty_cigar = cigar::stringToCigar("*");
+            CHECK(empty_cigar.empty());
+        }
+
+        // 测试4：空字符串
+        SUBCASE("空字符串") {
+            cigar::Cigar_t empty_cigar = cigar::stringToCigar("");
+            CHECK(empty_cigar.empty());
+        }
+
+        // 测试5：大数字长度
+        SUBCASE("大数字长度") {
+            cigar::Cigar_t original;
+            original.push_back(cigar::cigarToInt('M', 999999));
+            original.push_back(cigar::cigarToInt('D', 123456));
+
+            std::string cigar_str = cigar::cigarToString(original);
+            CHECK(cigar_str == "999999M123456D");
+
+            cigar::Cigar_t roundtrip = cigar::stringToCigar(cigar_str);
+            REQUIRE(roundtrip.size() == original.size());
+            CHECK(roundtrip[0] == original[0]);
+            CHECK(roundtrip[1] == original[1]);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 测试：stringToCigar 错误处理
+    // ------------------------------------------------------------------
+    TEST_CASE("cigar::stringToCigar - 错误处理") {
+        // 测试1：操作符前没有数字
+        SUBCASE("操作符前没有数字") {
+            CHECK_THROWS_AS(cigar::stringToCigar("M10"), std::runtime_error);
+        }
+
+        // 测试2：未知操作符
+        SUBCASE("未知操作符") {
+            CHECK_THROWS_AS(cigar::stringToCigar("10Q"), std::runtime_error);
+        }
+
+        // 测试3：字符串结尾有数字但没有操作符
+        SUBCASE("结尾有数字无操作符") {
+            CHECK_THROWS_AS(cigar::stringToCigar("10M5"), std::runtime_error);
+        }
+
+        // 测试4：长度为 0
+        SUBCASE("长度为 0") {
+            CHECK_THROWS_AS(cigar::stringToCigar("0M"), std::runtime_error);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 测试：stringToCigar 容错性
+    // ------------------------------------------------------------------
+    TEST_CASE("cigar::stringToCigar - 容错性") {
+        // 测试1：包含空白字符
+        SUBCASE("包含空白字符") {
+            std::string cigar_with_spaces = " 10M 5I  3D ";
+            cigar::Cigar_t result = cigar::stringToCigar(cigar_with_spaces);
+
+            REQUIRE(result.size() == 3);
+            char op;
+            uint32_t len;
+
+            cigar::intToCigar(result[0], op, len);
+            CHECK(op == 'M');
+            CHECK(len == 10);
+
+            cigar::intToCigar(result[1], op, len);
+            CHECK(op == 'I');
+            CHECK(len == 5);
+
+            cigar::intToCigar(result[2], op, len);
+            CHECK(op == 'D');
+            CHECK(len == 3);
+        }
+    }
 }
 
 // ------------------------------------------------------------------

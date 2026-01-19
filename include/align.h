@@ -66,6 +66,30 @@ namespace cigar
     std::string cigarToString(const Cigar_t& cigar);
 
     // ------------------------------------------------------------------
+    // 函数：stringToCigar
+    // 功能：将 SAM 格式的 CIGAR 字符串解析为压缩格式的 Cigar_t
+    // 参数：cigar_str - SAM 格式的 CIGAR 字符串，例如 "100M5I95M"
+    // 返回：Cigar_t（压缩的整数向量），每个元素编码一个操作（长度+操作符）
+    // 异常：
+    //   - 如果字符串格式无效（例如缺少数字、未知操作符、长度为0等），抛出 std::runtime_error
+    //   - 如果长度超过 2^28-1，抛出 std::runtime_error
+    // 性能：
+    //   1. 复杂度 O(N)，N 为字符串长度
+    //   2. 预分配结果向量空间，减少内存重新分配
+    //   3. 使用原地解析，避免不必要的字符串拷贝
+    // 示例：
+    //   输入："100M5I95M"
+    //   输出：[cigarToInt('M', 100), cigarToInt('I', 5), cigarToInt('M', 95)]
+    //   输入："*"（未知 CIGAR）
+    //   输出：空向量
+    // 正确性说明：
+    //   - 本函数是 cigarToString 的逆操作，满足：stringToCigar(cigarToString(c)) == c
+    //   - 支持 SAM 标准的所有 CIGAR 操作符：M, I, D, N, S, H, P, =, X
+    //   - 自动跳过空白字符（空格、制表符、换行符），容错性强
+    // ------------------------------------------------------------------
+    Cigar_t stringToCigar(const std::string& cigar_str);
+
+    // ------------------------------------------------------------------
     // 函数：alignQueryToRef
     // 功能：根据 CIGAR 操作对 query 序列插入 gap 字符（'-'），使其与参考序列对齐
     //

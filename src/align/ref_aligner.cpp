@@ -156,13 +156,15 @@ namespace align {
             // - 如果文件打开失败，会抛出异常并中止合并
             seq_io::SamReader reader(sam_path);
 
-            // 逐条读取并追加写入
-            seq_io::SeqRecord rec;
+            seq_io::SamRecord sam_rec;
+            seq_io::SeqRecord fasta_rec;
             std::size_t file_count = 0;
 
-            while (reader.next(rec)) {
-                // 写入 FASTA 格式（只保留 id 和 seq，丢弃 qual）
-                writer.writeFasta(rec);
+            while (reader.next(sam_rec)) {
+
+                fasta_rec = seq_io::samRecordToSeqRecord(sam_rec, false);
+
+                writer.writeFasta(fasta_rec);
                 ++file_count;
                 ++total_count;
             }
@@ -534,48 +536,137 @@ namespace align {
         seq_io::SeqWriter final_writer(final_output_path, U_MAX);
 
         // 首先先把consensus_aligned_file写入最终文件
+        // ------------------------------------------------------------------
+        // 序列长度一致性检测
+        // 说明：
+        // - MSA（多序列比对）的关键要求是所有序列长度必须一致
+        // - expected_length：第一条序列的长度，作为后续序列的参考标准
+        // - seq_count：已写入的序列数量
+        // - 如果发现长度不一致，立即抛出异常并报告详细信息
+        // ------------------------------------------------------------------
+        std::size_t expected_length = 0;   // 期望的序列长度（由第一条序列确定）
+        std::size_t seq_count = 0;         // 已写入的序列数量
+        bool length_initialized = false;   // 是否已初始化 expected_length
+
+        // 1. 处理 consensus 对齐序列
         seq_io::KseqReader cons_reader(consensus_aligned_file);
         seq_io::SeqRecord cons_rec;
         cigar::Cigar_t tmp_insertion_cigar =  insertion_aligned_map[consensus_seq.id];
-        // while (cons_reader.next(cons_rec))
-        // {
-        //     if (keep_first_length)
-        //     {
-        //         removeRefGapColumns(cons_rec.seq, ref_gap_pos);
-        //     }
-        //     // 说明：consensus 对自己比对，CIGAR 为空
-        //     cigar::alignQueryToRef(cons_rec.seq, tmp_insertion_cigar );
-        //     if (keep_all_length || keep_first_length)
-        //     {
-        //         removeRefGapColumns(cons_rec.seq, insertion_ref_gap_pos);
-        //     }
-        //
-        //     final_writer.writeFasta(cons_rec);
-        // }
-        // final_writer.flush();
+        while (cons_reader.next(cons_rec))
+        {
+            if (keep_first_length)
+            {
+                removeRefGapColumns(cons_rec.seq, ref_gap_pos);
+            }
+            // 说明：consensus 对自己比对，CIGAR 为空
+            cigar::alignQueryToRef(cons_rec.seq, tmp_insertion_cigar );
+            if (keep_all_length || keep_first_length)
+            {
+                removeRefGapColumns(cons_rec.seq, insertion_ref_gap_pos);
+            }
 
-        // seq_io::KseqReader insertion_reader(aligned_insertion_fasta);
-        // seq_io::SeqRecord insertion_rec;
-        // while (insertion_reader.next(insertion_rec))
-        // {
-        //     if (keep_first_length || keep_all_length)
-        //     {
-        //         removeRefGapColumns(insertion_rec.seq, insertion_ref_gap_pos);
-        //     }
-        //     final_writer.writeFasta(insertion_rec);
-        // }
-        // final_writer.flush();
+            // 长度检测：第一条序列初始化 expected_length，后续序列必须与之一致
+            if (!length_initialized) {
+                expected_length = cons_rec.seq.size();
+                length_initialized = true;
+            } else if (cons_rec.seq.size() != expected_length) {
+                throw std::runtime_error(
+                    "mergeAlignedResults: 序列长度不一致！序列 '" + cons_rec.id +
+                    "' 长度为 " + std::to_string(cons_rec.seq.size()) +
+                    "，期望长度为 " + std::to_string(expected_length) +
+                    " (第 " + std::to_string(seq_count + 1) + " 条序列)");
+            }
 
-        // 遍历所有的sam文件，转换为seqrecord
+            final_writer.writeFasta(cons_rec);
+            ++seq_count;
+        }
+        final_writer.flush();
+
+        // 2. 处理 insertion 对齐序列
+        seq_io::KseqReader insertion_reader(aligned_insertion_fasta);
+        seq_io::SeqRecord insertion_rec;
+        bool skip_first = true;
+        while (insertion_reader.next(insertion_rec))
+        {
+            if (skip_first)
+            {
+                // 跳过第一条序列（共识序列），因为已经处理过了
+                skip_first = false;
+                continue;
+            }
+            if (keep_first_length || keep_all_length)
+            {
+                removeRefGapColumns(insertion_rec.seq, insertion_ref_gap_pos);
+            }
+
+            // 长度检测
+            if (!length_initialized) {
+                expected_length = insertion_rec.seq.size();
+                length_initialized = true;
+            } else if (insertion_rec.seq.size() != expected_length) {
+                throw std::runtime_error(
+                    "mergeAlignedResults: 序列长度不一致！序列 '" + insertion_rec.id +
+                    "' 长度为 " + std::to_string(insertion_rec.seq.size()) +
+                    "，期望长度为 " + std::to_string(expected_length) +
+                    " (第 " + std::to_string(seq_count + 1) + " 条序列)");
+            }
+
+            final_writer.writeFasta(insertion_rec);
+            ++seq_count;
+        }
+        final_writer.flush();
+
+        // 3. 遍历所有的 SAM 文件，转换为 SeqRecord 并应用比对
         for (const auto& sam_path : outs_path)
         {
             seq_io::SamReader sam_reader(sam_path);
-            seq_io::SeqRecord sam_rec;
+            seq_io::SamRecord sam_rec;
+            seq_io::SeqRecord fasta_rec;
             while (sam_reader.next(sam_rec))
             {
-                // 这里可以对 sam_rec 进行处理
+                fasta_rec = seq_io::samRecordToSeqRecord(sam_rec, false);
+                cigar::Cigar_t tmp_cigar = cigar::stringToCigar(sam_rec.cigar);
+
+                cigar::alignQueryToRef(fasta_rec.seq, tmp_cigar);
+                cigar::Cigar_t ref_cigar = ref_aligned_map[sam_rec.rname];
+                cigar::alignQueryToRef(fasta_rec.seq, ref_cigar);
+
+                if (keep_first_length)
+                {
+                    removeRefGapColumns(fasta_rec.seq, ref_gap_pos);
+                }
+                // 说明：consensus 对自己比对，CIGAR 为空
+                cigar::alignQueryToRef(fasta_rec.seq, tmp_insertion_cigar);
+                if (keep_all_length || keep_first_length)
+                {
+                    removeRefGapColumns(fasta_rec.seq, insertion_ref_gap_pos);
+                }
+
+                // 长度检测
+                if (!length_initialized) {
+                    expected_length = fasta_rec.seq.size();
+                    length_initialized = true;
+                } else if (fasta_rec.seq.size() != expected_length) {
+                    throw std::runtime_error(
+                        "mergeAlignedResults: 序列长度不一致！序列 '" + fasta_rec.id +
+                        "' 长度为 " + std::to_string(fasta_rec.seq.size()) +
+                        "，期望长度为 " + std::to_string(expected_length) +
+                        " (第 " + std::to_string(seq_count + 1) + " 条序列，来自 SAM: " + sam_rec.rname + ")");
+                }
+
+                final_writer.writeFasta(fasta_rec);
+                ++seq_count;
             }
         }
+        final_writer.flush();
+
+        // ------------------------------------------------------------------
+        // 最终验证与统计输出
+        // ------------------------------------------------------------------
+#ifdef _DEBUG
+        spdlog::info("mergeAlignedResults: 成功写入 {} 条序列，所有序列长度一致 = {}",
+                    seq_count, expected_length);
+#endif
 
 
     }
