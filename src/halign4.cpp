@@ -170,9 +170,9 @@ int main(int argc, char** argv) {
         ref_aligner.mergeAlignedResults(consensus_aligned_file, opt.msa_cmd);
         // 调用RefAligner进行后续的对齐和合并工作
 
-
-
-
+        FilePath final_output_path = FilePath(opt.workdir) / RESULTS_DIR / "final_aligned.fasta";
+        file_io::copyFile(final_output_path, FilePath(opt.output));
+        spdlog::info("Final aligned output written to {}", opt.output);
         // 后续流程（概要）：
         // - 使用 minimizer / k-mer 方法估算序列间相似度并分组；
         // - 对于每个分组使用多序列比对并生成局部共识；
