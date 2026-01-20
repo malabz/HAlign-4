@@ -12,20 +12,20 @@
 // 1) CIGAR 压缩编码（char+len <-> uint32_t）
 // 2) SAM CIGAR 字符串 <-> 压缩 Cigar_t 的互转
 // 3) 检测插入（hasInsertion）
-// 4) alignQueryToRef：按 CIGAR 将 query 投影到 ref 坐标系（插入 gap '-')
+// 4) padQueryToRefByCigar：按 CIGAR 将 query 投影到 ref 坐标系（插入 gap '-')
 //
 // 重要约定（正确性）：
 // - 本项目的 CIGAR 压缩形式与 BAM/SAM 一致：unit=(len<<4)|op。
 // - op 编码采用标准 BAM 编码：
 //     0=M, 1=I, 2=D, 3=N, 4=S, 5=H, 6=P, 7==, 8=X
-// - alignQueryToRef 的语义：
-//   “根据 CIGAR 在 query 中插入缺失列（D/N）对应的 gap '-'，从而让 query 与 ref 对齐”。
+// - padQueryToRefByCigar 的语义：
+//   "根据 CIGAR 在 query 中插入缺失列（D/N）对应的 gap '-'，从而让 query 与 ref 对齐"。
 //   注意：M/I/S/=/X 都会消耗 query 的字符；D/N 不消耗 query，只在输出中放 '-'
 //
 // 性能设计点：
 // - stringToCigar：单次线性扫描解析，预估 reserve 避免 vector 扩容
 // - cigarToString：预估字符串容量，减少 realloc
-// - alignQueryToRef：采用"从后往前"填充，避免 std::string insert 的 O(N^2)
+// - padQueryToRefByCigar：采用"从后往前"填充，避免 std::string insert 的 O(N^2)
 //
 // 边界条件：
 // - CIGAR 为 "*"（SAM 未知）-> 返回空 Cigar_t
@@ -224,7 +224,7 @@ namespace cigar
     // - 所有消耗 query 的操作总长度必须等于 old_query.size()
     // - 若不等，说明 CIGAR 与 query 长度不匹配（Debug 断言/运行时错误）
     // ------------------------------------------------------------------
-    void alignQueryToRef(std::string& query, const Cigar_t& cigar)
+    void padQueryToRefByCigar(std::string& query, const Cigar_t& cigar)
     {
         if (cigar.empty()) {
             return; // 空 CIGAR：不做任何调整（保持历史行为）

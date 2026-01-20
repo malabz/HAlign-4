@@ -36,7 +36,7 @@
 //    - 高 28 位：操作长度（0 到 2^28-1，约 2.68 亿）
 //    - 低 4 位：操作类型编码（0-8，对应 M/I/D/N/S/H/P/=/X）
 // 2. **零拷贝解析**：stringToCigar 直接从字符串解析为压缩格式
-// 3. **原地对齐**：alignQueryToRef 原地修改序列，避免内存分配
+// 3. **原地对齐**：padQueryToRefByCigar 原地修改序列，避免内存分配
 //
 // 支持的 CIGAR 操作（SAM 标准）：
 // - M (match/mismatch):    query 和 ref 都消耗，可能匹配或错配
@@ -134,11 +134,11 @@ namespace cigar
     Cigar_t stringToCigar(const std::string& cigar_str);
 
     // ------------------------------------------------------------------
-    // 函数：alignQueryToRef
+    // 函数：padQueryToRefByCigar
     // 功能：根据 CIGAR 操作对 query 序列插入 gap 字符（'-'），使其与参考序列对齐
     //
     // ------------------------------------------------------------------
-    // 函数：alignQueryToRef
+    // 函数：padQueryToRefByCigar
     // 功能：根据 CIGAR 操作对 query 序列插入 gap 字符（'-'），使其与参考序列对齐
     //
     // **关键特性：保留原有 gap 字符**
@@ -187,7 +187,7 @@ namespace cigar
     //   - MSA 场景：输入序列已有 gap（来自之前的比对），需要根据新 CIGAR 调整对齐
     //   - 迭代比对：多次比对同一序列，每次都保留之前的 gap 并插入新 gap
     // ------------------------------------------------------------------
-    void alignQueryToRef(std::string& query, const Cigar_t& cigar);
+    void padQueryToRefByCigar(std::string& query, const Cigar_t& cigar);
 }
 
 // ==================================================================

@@ -674,9 +674,9 @@ namespace align {
             // ------------------------------------------------------------------
             // 说明：consensus 对自己比对，CIGAR 为空（或只有 M 操作）
             // tmp_insertion_cigar：共识序列在插入 MSA 中的 CIGAR
-            // alignQueryToRef：根据 CIGAR 在序列中插入 gap，使其对齐到插入 MSA 的坐标系
+            // padQueryToRefByCigar：根据 CIGAR 在序列中插入 gap，使其对齐到插入 MSA 的坐标系
             // 性能：原地修改，避免拷贝
-            cigar::alignQueryToRef(cons_rec.seq, tmp_insertion_cigar );
+            cigar::padQueryToRefByCigar(cons_rec.seq, tmp_insertion_cigar );
 
             // ------------------------------------------------------------------
             // 步骤 4.1.3：移除插入 MSA 中共识序列的 gap 列（可选）
@@ -794,10 +794,10 @@ namespace align {
         // 投影步骤（对每条 read）：
         // 1. 读取 SAM 记录（query 序列 + CIGAR）
         // 2. 应用 SAM CIGAR：query → reference（第一级投影）
-        //    - alignQueryToRef(seq, sam_cigar)
+        //    - padQueryToRefByCigar(seq, sam_cigar)
         //    - 在 query 中插入 gap，使其对齐到参考序列
         // 3. 应用 ref_aligned_map：reference → consensus（第二级投影）
-        //    - alignQueryToRef(seq, ref_cigar)
+        //    - padQueryToRefByCigar(seq, ref_cigar)
         //    - 在序列中插入 gap，使其对齐到共识序列
         // 4. [可选] 移除共识序列的 gap 列
         // 5. 应用 tmp_insertion_cigar：consensus → insertion MSA（第三级投影）
@@ -807,7 +807,7 @@ namespace align {
         // ========================================================================
         //
         // 性能考虑：
-        // - 每次 alignQueryToRef 都是原地修改，避免拷贝
+        // - 每次 padQueryToRefByCigar 都是原地修改，避免拷贝
         // - CIGAR 操作复杂度：O(CIGAR_length)
         // - 序列修改复杂度：O(seq_length + inserted_gaps)
         // ------------------------------------------------------------------
@@ -839,7 +839,7 @@ namespace align {
                 // 根据 SAM CIGAR 将 query 序列投影到参考序列坐标系
                 // 操作：在序列中插入 gap（'-'），对应 CIGAR 中的 D（deletion）操作
                 // 原理：D 表示参考序列有而 query 没有的碱基，需要在 query 中插入 gap
-                cigar::alignQueryToRef(fasta_rec.seq, tmp_cigar);
+                cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_cigar);
 
                 // ------------------------------------------------------------------
                 // 步骤 4.3.4：第二级投影 - reference → consensus
@@ -848,7 +848,7 @@ namespace align {
                 // sam_rec.rname：参考序列名（如 "ref_1"）
                 // 操作：将序列从参考坐标系投影到共识序列坐标系
                 cigar::Cigar_t ref_cigar = ref_aligned_map[sam_rec.rname];
-                cigar::alignQueryToRef(fasta_rec.seq, ref_cigar);
+                cigar::padQueryToRefByCigar(fasta_rec.seq, ref_cigar);
 
                 // ------------------------------------------------------------------
                 // 步骤 4.3.5：移除共识序列的 gap 列（可选）
@@ -863,7 +863,7 @@ namespace align {
                 // ------------------------------------------------------------------
                 // 说明：如果共识序列本身在插入 MSA 中有 gap，需要在所有序列中同步插入
                 // tmp_insertion_cigar：共识序列在插入 MSA 中的 CIGAR（对所有序列相同）
-                cigar::alignQueryToRef(fasta_rec.seq, tmp_insertion_cigar);
+                cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_insertion_cigar);
 
                 // ------------------------------------------------------------------
                 // 步骤 4.3.7：移除插入 MSA 共识序列的 gap 列（可选）
