@@ -105,6 +105,12 @@ typedef uint32_t uint_t;
 #define I_MIN	INT32_MIN
 #endif
 
+// 获取硬件并发线程数（兜底 1）
+static int get_default_threads() {
+    unsigned int hc = std::thread::hardware_concurrency();
+    return static_cast<int>(hc ? hc : 1u);
+}
+
 struct Options {
 	// 输入/输出与工作目录
 	std::string input;          // -i：输入序列文件（路径或压缩文件）
@@ -116,7 +122,7 @@ struct Options {
 	std::string msa_cmd;        // -p：用于对共识序列做 MSA 的命令模板（可以包含 {input} {output} {thread} 占位符）
 
 	// 并行与算法参数
-	int threads = [](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }(); // -t：线程数，默认为 CPU 核心数
+	int threads = get_default_threads(); // -t：线程数，默认为 CPU 核心数
 	int kmer_size = 15;         // --kmer-size：用于归类/聚类的 k-mer 大小（后续步骤使用）
 	int kmer_window = 10;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
 	int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
@@ -160,7 +166,7 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::ExistingFile);
 
     app.add_option("-t,--thread", opt.threads, "Number of threads")
-        ->default_val([](){ unsigned int hc = std::thread::hardware_concurrency(); return static_cast<int>(hc ? hc : 1u); }())
+        ->default_val(get_default_threads())
         ->check(CLI::Range(1, 100000));
 
     app.add_option("--kmer-size", opt.kmer_size, "K-mer size")

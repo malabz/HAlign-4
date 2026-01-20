@@ -119,8 +119,11 @@ namespace cigar
     bool hasInsertion(const Cigar_t& cigar)
     {
         for (const CigarUnit cu : cigar) {
-            const uint32_t op = (cu & 0x0Fu);
-            if (op == 1u) return true; // 1 = I
+            char op_char;
+            uint32_t len;
+            // 统一使用 intToCigar 解码以进行操作符检查
+            intToCigar(cu, op_char, len);
+            if (op_char == 'I') return true;
         }
         return false;
     }
@@ -141,10 +144,12 @@ namespace cigar
         out.reserve(cigar.size() * 5);
 
         for (const CigarUnit cu : cigar) {
-            const uint32_t op_code = (cu & 0x0Fu);
-            const uint32_t len = (cu >> 4);
+            char op_char;
+            uint32_t len = 0;
+            // 使用已有函数解码，确保编码逻辑的一致性
+            intToCigar(cu, op_char, len);
             out.append(std::to_string(len));
-            out.push_back(opCodeToChar(op_code));
+            out.push_back(op_char);
         }
         return out;
     }
@@ -238,13 +243,18 @@ namespace cigar
         std::size_t consume_query = 0;
 
         for (const CigarUnit cu : cigar) {
-            const uint32_t op = (cu & 0x0Fu);
-            const uint32_t len = (cu >> 4);
+            // 使用 intToCigar 统一解码 CigarUnit，增强可读性和一致性
+            // 说明：intToCigar 将压缩整数还原为 (op_char, len)
+            // 性能说明：intToCigar 内部本质上也是位运算和查表，开销极小；
+            // 本次替换主要为了代码可维护性与避免重复低级位操作。
+            char op_char;
+            uint32_t len = 0;
+            intToCigar(cu, op_char, len);
 
             // D/N：ref 消耗，query 不消耗，但输出 '-' len 次
-            if (op == 2u || op == 3u) {
+            if (op_char == 'D' || op_char == 'N') {
                 out_len += len;
-            } else if (op == 5u || op == 6u) {
+            } else if (op_char == 'H' || op_char == 'P') {
                 // H/P：不消耗 ref，也不消耗 query，也不产生输出列（在 MSA 场景中可能出现）
                 // 保持与历史行为：忽略
                 continue;
@@ -273,10 +283,12 @@ namespace cigar
         std::size_t r = old.size();
 
         for (auto it = cigar.rbegin(); it != cigar.rend(); ++it) {
-            const uint32_t op = (*it & 0x0Fu);
-            const uint32_t len = (*it >> 4);
+            // 统一通过 intToCigar 解码当前操作及长度
+            char op_char;
+            uint32_t len = 0;
+            intToCigar(*it, op_char, len);
 
-            if (op == 2u || op == 3u) {
+            if (op_char == 'D' || op_char == 'N') {
                 // D/N：输出 '-' len 次，不消耗 old
                 for (uint32_t i = 0; i < len; ++i) {
                     query[--w] = '-';
@@ -284,7 +296,7 @@ namespace cigar
                 continue;
             }
 
-            if (op == 5u || op == 6u) {
+            if (op_char == 'H' || op_char == 'P') {
                 // H/P：忽略
                 continue;
             }
