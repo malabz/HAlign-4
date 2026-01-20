@@ -129,6 +129,80 @@ namespace seed
     };
 
 
+
+    struct Anchor
+    {
+        hash_t hash{};              // 一般就是 seed hash（期望 ref/query 相同）
+        std::uint32_t rid_ref{};    // ref 序列 id
+        std::uint32_t pos_ref{};    // ref 上位置（0-based）
+        std::uint32_t rid_qry{};    // query 序列 id（很多场景固定 0）
+        std::uint32_t pos_qry{};    // query 上位置（0-based, forward 坐标系）
+        std::uint32_t span{};       // 覆盖长度（可用 min(ref.span, qry.span)）
+        bool is_rev{};              // ref/query 是否为"相反链"
+        // 可选：预先缓存对角线，chaining 常用
+        // int32_t diag{}; // (int32_t)pos_ref - (int32_t)pos_qry
+    };
+
+    // =====================================================================
+    // collect_anchors - 收集锚点（参考 minimap2 实现）
+    // ---------------------------------------------------------------------
+    // 功能：
+    // 从 ref_hits 和 qry_hits 中收集所有共享相同 hash 的锚点对
+    //
+    // 算法流程（minimap2 风格）：
+    // 1. 对 ref_hits 按 hash 排序，构建 hash -> position 索引
+    // 2. 遍历 qry_hits，通过 hash 查找匹配的 ref_hits
+    // 3. 对于每个匹配，生成一个 Anchor
+    //
+    // 参数：
+    //   ref_hits : 参考序列的种子命中列表
+    //   qry_hits : 查询序列的种子命中列表
+    //
+    // 返回：
+    //   std::vector<Anchor> - 锚点列表（未排序）
+    //
+    // 复杂度：
+    //   时间：O(R log R + Q * avg_matches)
+    //   空间：O(R + A)
+    //
+    // 注意：模板声明在这里，显式实例化在 chain.cpp 中
+    // =====================================================================
+    template <typename HitT>
+    std::vector<Anchor> collect_anchors(const std::vector<HitT>& ref_hits, const std::vector<HitT>& qry_hits);
+
+    // =====================================================================
+    // sortAnchorsByDiagonal - 按对角线排序锚点（用于链化算法）
+    // ---------------------------------------------------------------------
+    // 排序规则：
+    // 1. 首先按 rid_ref 排序
+    // 2. 其次按对角线 (pos_ref - pos_qry) 排序
+    // 3. 最后按 pos_ref 排序
+    // =====================================================================
+    void sortAnchorsByDiagonal(std::vector<Anchor>& anchors);
+
+    // =====================================================================
+    // sortAnchorsByPosition - 按位置排序锚点
+    // ---------------------------------------------------------------------
+    // 排序规则：
+    // 1. 首先按 rid_ref 排序
+    // 2. 其次按 pos_ref 排序
+    // 3. 最后按 pos_qry 排序
+    // =====================================================================
+    void sortAnchorsByPosition(std::vector<Anchor>& anchors);
+
+    // =====================================================================
+    // filterHighFrequencyAnchors - 过滤高频锚点（参考 minimap2）
+    // ---------------------------------------------------------------------
+    // 功能：
+    // 移除出现次数超过阈值的锚点（重复区域噪声过滤）
+    //
+    // 参数：
+    //   anchors : 输入/输出锚点列表（原地修改）
+    //   max_occ : 单个 hash 允许的最大出现次数（默认 500）
+    // =====================================================================
+    void filterHighFrequencyAnchors(std::vector<Anchor>& anchors, std::size_t max_occ = 500);
+
+
 } // namespace seed
 
 // ================================================================

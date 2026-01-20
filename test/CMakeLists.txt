@@ -32,6 +32,7 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/consensus/selector.cpp"
         "${HALIGN4_ROOT}/src/consensus/consensus.cpp"
         "${HALIGN4_ROOT}/src/seed/minimizer.cpp"
+        "${HALIGN4_ROOT}/src/seed/chain.cpp"
         "${HALIGN4_ROOT}/src/mash/mash.cpp"
         "${HALIGN4_ROOT}/src/align/ref_aligner.cpp"
         "${HALIGN4_ROOT}/src/align/ksw2_extz2_sse.c"
