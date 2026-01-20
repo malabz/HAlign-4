@@ -691,6 +691,57 @@ namespace align {
         // ------------------------------------------------------------------
         void mergeAlignedResults(const FilePath& aligned_consensus_path, const std::string& msa_cmd);
 
+        // ------------------------------------------------------------------
+        // 静态方法：globalAlign - 全局序列比对（统一接口）
+        // ------------------------------------------------------------------
+        // 功能：
+        // 根据两个序列的相似度自动选择合适的比对算法执行全局比对
+        // 当前实现：直接使用 WFA2 算法（未来可扩展为相似度自适应策略）
+        //
+        // 参数：
+        //   @param ref - 参考序列（字符串，A/C/G/T/N）
+        //   @param query - 查询序列（字符串，A/C/G/T/N）
+        //   @param similarity - 两个序列的相似度（0.0 到 1.0）
+        //                       - 用于未来选择最优比对算法
+        //                       - 当前版本未使用该参数，但保留接口兼容性
+        //   @param ref_minimizer - 参考序列的 minimizer 索引（可选）
+        //                          - 用于种子定位和锚点比对（未来扩展）
+        //                          - 当前版本未使用，但保留接口用于优化
+        //   @param query_minimizer - 查询序列的 minimizer 索引（可选）
+        //                            - 用于种子定位和锚点比对（未来扩展）
+        //                            - 当前版本未使用，但保留接口用于优化
+        //
+        // 返回：
+        // CIGAR 操作序列（cigar::Cigar_t），描述 query 如何比对到 ref
+        //
+        // 算法选择策略（未来扩展）：
+        // - 高相似度（similarity > 0.90）：使用 WFA2（速度优势明显）
+        // - 中等相似度（0.70 < similarity <= 0.90）：使用 KSW2 延伸比对
+        // - 低相似度（similarity <= 0.70）：使用 KSW2 全局比对（更稳健）
+        //
+        // 未来优化方向：
+        // - 利用 minimizer 信息进行种子定位，减少比对范围
+        // - 对于长序列，可先通过 minimizer 找到锚点，再分段比对
+        // - 根据 minimizer 密度调整比对策略
+        //
+        // 当前实现：
+        // - 直接调用 globalAlignWFA2（简化实现，保持一致性）
+        // - 忽略 similarity、ref_minimizer、query_minimizer 参数（未来可用）
+        //
+        // 使用示例：
+        // auto cigar = RefAligner::globalAlign(ref_seq, query_seq, 0.95, ref_mz, query_mz);
+        //
+        // 设计说明：
+        // - 作为静态方法，不依赖 RefAligner 实例，可独立调用
+        // - 提供统一的比对接口，方便未来扩展多算法支持
+        // - 预留 minimizer 参数，避免后续修改所有调用点
+        // ------------------------------------------------------------------
+        static cigar::Cigar_t globalAlign(const std::string& ref,
+                                          const std::string& query,
+                                          double similarity,
+                                          const SeedHits* ref_minimizer = nullptr,
+                                          const SeedHits* query_minimizer = nullptr);
+
 
         private:
         // ------------------------------------------------------------------
@@ -795,6 +846,10 @@ namespace align {
         // - 在 mergeAlignedResults 中作为坐标系的锚点
         // ------------------------------------------------------------------
         seq_io::SeqRecord consensus_seq;  // 共识序列（作为成员变量存储）
+        mash::Sketch consensus_sketch;    // 共识序列的 MinHash sketch（用于二次比对时的相似度计算）
+                                          // 说明：在构造函数中初始化一次，避免每次 alignOneQueryToRef 都重复计算
+        SeedHits consensus_minimizer;     // 共识序列的 Minimizer 索引（用于二次比对时的种子定位）
+                                          // 说明：在构造函数中初始化一次，避免每次 alignOneQueryToRef 都重复计算
 
         // ------------------------------------------------------------------
         // MinHash 和 Minimizer 参数

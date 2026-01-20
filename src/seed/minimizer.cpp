@@ -95,10 +95,10 @@ namespace minimizer
     // =============================================================
     // 目标：从单条序列中提取 minimizer（带位置 hit）。
     // =============================================================
-    MinimizerHits extractMinimizerHash(const std::string& seq,
-                                       std::size_t k,
-                                       std::size_t w,
-                                       bool non_canonical)
+    MinimizerHits extractMinimizer(const std::string& seq,
+                                   std::size_t k,
+                                   std::size_t w,
+                                   bool non_canonical)
     {
         MinimizerHits out;
 
@@ -106,7 +106,6 @@ namespace minimizer
         if (k == 0 || w == 0 || n < k) return out;
         if (k > 31) return out;
         if (w >= 256) return out;
-        if (k >= 256) return out; // span 只有 8bit
 
         const auto& nt4_table_ref = minimizer::nt4_table;
 

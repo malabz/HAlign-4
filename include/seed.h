@@ -214,7 +214,7 @@ namespace minimizer
     using MinimizerHits = std::vector<MinimizerHit>;
 
     // =====================================================================
-    // extractMinimizerHash
+    // extractMinimizer
     // ---------------------------------------------------------------------
     // 从一条输入序列中提取 minimizer hit 列表（hash+位置）。
     //
@@ -228,10 +228,10 @@ namespace minimizer
     //
     // 注意：这里只提供声明；实现请放到对应的 .cpp 文件中。
     // =====================================================================
-    MinimizerHits extractMinimizerHash(const std::string& seq,
-                                       std::size_t k,
-                                       std::size_t w,
-                                       bool non_canonical);
+    MinimizerHits extractMinimizer(const std::string& seq,
+                                   std::size_t k,
+                                   std::size_t w,
+                                   bool non_canonical);
 
 
     // =============================================================

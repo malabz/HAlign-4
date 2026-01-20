@@ -9,7 +9,7 @@
 #include <vector>
 
 // ================================================================
-// 这个文件把 extractMinimizerHash 的性能测试接入 doctest：
+// 这个文件把 extractMinimizer 的性能测试接入 doctest：
 // - 默认跳过（避免 CI/普通单测跑很久）
 // - 通过环境变量 HALIGN4_RUN_PERF=1 显式启用
 // - 测试里不做严格性能断言，只打印耗时/吞吐，用于人工对比实现改动前后表现
@@ -44,7 +44,7 @@ static std::string makeRandomDna(std::size_t len, std::uint32_t seed)
 
 TEST_SUITE("minimizer" * doctest::skip(shouldSkipPerf()))
 {
-    TEST_CASE("extractMinimizerHash - throughput")
+    TEST_CASE("extractMinimizer - throughput")
     {
         // 可通过环境变量覆盖不同规模，便于你本地调参
         // HALIGN4_MINIMIZER_SEQ_LEN=10000
@@ -74,7 +74,7 @@ TEST_SUITE("minimizer" * doctest::skip(shouldSkipPerf()))
         // 预热：避免第一次运行的 cache/branch predictor 影响过大
         std::uint64_t checksum = 0;
         for (const auto& s : seqs) {
-            auto mz = minimizer::extractMinimizerHash(s, k, w, false);
+            auto mz = minimizer::extractMinimizer(s, k, w, false);
             checksum += static_cast<std::uint64_t>(mz.size());
             if (!mz.empty()) checksum ^= mz.front().hash();
         }
@@ -84,7 +84,7 @@ TEST_SUITE("minimizer" * doctest::skip(shouldSkipPerf()))
         std::uint64_t total_minimizers = 0;
         for (std::size_t r = 0; r < rounds; ++r) {
             for (const auto& s : seqs) {
-                auto mz = minimizer::extractMinimizerHash(s, k, w, false);
+                auto mz = minimizer::extractMinimizer(s, k, w, false);
                 total_minimizers += static_cast<std::uint64_t>(mz.size());
                 if (!mz.empty()) checksum ^= mz.back().hash();
             }

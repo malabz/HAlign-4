@@ -157,7 +157,7 @@ TEST_SUITE("align") {
 
     TEST_CASE("globalAlignWFA2 - 精确匹配") {
         std::string seq = "ACGTACGTACGT";
-        auto cigar = align::globalAlignWFA2(seq, seq);
+        auto cigar = align::RefAligner::globalAlign(seq, seq, 1.0);
 
         REQUIRE(cigar.size() >= 1);
         std::string cigar_str = cigarToString(cigar);
@@ -182,7 +182,7 @@ TEST_SUITE("align") {
         // 三种方法都应该能正确比对
         auto cigar_ksw2 = align::globalAlignKSW2(ref, query);
         auto cigar_extend = align::extendAlignKSW2(ref, query, 200);
-        auto cigar_wfa2 = align::globalAlignWFA2(ref, query);
+        auto cigar_wfa2 = align::RefAligner::globalAlign(ref, query, 0.99);
 
         // 验证 CIGAR 都不为空
         CHECK(cigar_ksw2.size() > 0);
@@ -200,7 +200,7 @@ TEST_SUITE("align") {
         std::string query = mutateSequence(ref, 0.01, 0.01, 54322);
 
         auto cigar_ksw2 = align::globalAlignKSW2(ref, query);
-        auto cigar_wfa2 = align::globalAlignWFA2(ref, query);
+        auto cigar_wfa2 = align::RefAligner::globalAlign(ref, query, 0.98);
 
         // 验证 CIGAR 包含不同类型的操作
         std::string cigar_str_ksw2 = cigarToString(cigar_ksw2);
@@ -416,7 +416,7 @@ TEST_SUITE("align_perf") {
         {
             Timer timer;
             for (const auto& [ref, query] : test_pairs) {
-                auto cigar = align::globalAlignWFA2(ref, query);
+                auto cigar = align::RefAligner::globalAlign(ref, query, 0.95);
                 (void)cigar;
             }
             double elapsed = timer.elapsedMs();
@@ -468,7 +468,7 @@ TEST_SUITE("align_perf") {
         {
             Timer timer;
             for (const auto& [ref, query] : test_pairs) {
-                auto cigar = align::globalAlignWFA2(ref, query);
+                auto cigar = align::RefAligner::globalAlign(ref, query, 0.95);
                 (void)cigar;
             }
             double elapsed = timer.elapsedMs();
@@ -481,7 +481,6 @@ TEST_SUITE("align_perf") {
 
     // ------------------------------------------------------------------
     // 性能测试：长序列（~10000bp）
-    // ------------------------------------------------------------------
     TEST_CASE("Performance - Long sequences (~10000bp)") {
         constexpr int NUM_RUNS = 10;
         constexpr size_t SEQ_LEN = 10000;
@@ -520,7 +519,7 @@ TEST_SUITE("align_perf") {
         {
             Timer timer;
             for (const auto& [ref, query] : test_pairs) {
-                auto cigar = align::globalAlignWFA2(ref, query);
+                auto cigar = align::RefAligner::globalAlign(ref, query, 0.95);
                 (void)cigar;
             }
             double elapsed = timer.elapsedMs();
@@ -566,7 +565,9 @@ TEST_SUITE("align_perf") {
             {
                 Timer timer;
                 for (const auto& [ref, query] : test_pairs) {
-                    auto cigar = align::globalAlignWFA2(ref, query);
+                    // 根据 SNP 率估算相似度（0.0 -> 1.0, 0.01 -> 0.99, 0.05 -> 0.95, 0.10 -> 0.90）
+                    double estimated_similarity = 1.0 - snp_rate;
+                    auto cigar = align::RefAligner::globalAlign(ref, query, estimated_similarity);
                     (void)cigar;
                 }
                 double elapsed = timer.elapsedMs();
@@ -647,7 +648,8 @@ TEST_SUITE("align_perf") {
             {
                 Timer timer;
                 for (const auto& [ref, query] : test_pairs) {
-                    auto cigar = align::globalAlignWFA2(ref, query);
+                    // 使用预期相似度（已在 SimilarityLevel 中定义）
+                    auto cigar = align::RefAligner::globalAlign(ref, query, level.similarity / 100.0);
                     (void)cigar;
                 }
                 double elapsed = timer.elapsedMs();
@@ -718,7 +720,7 @@ TEST_SUITE("align_perf") {
             {
                 Timer timer;
                 for (const auto& [ref, query] : test_pairs) {
-                    auto cigar = align::globalAlignWFA2(ref, query);
+                    auto cigar = align::RefAligner::globalAlign(ref, query, 0.98);
                     (void)cigar;
                 }
                 wfa2_time = timer.elapsedMs() / NUM_RUNS;
