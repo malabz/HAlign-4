@@ -36,7 +36,7 @@ add_executable(halign4
         src/align/cigar.cpp
         src/align/align.cpp
         src/seed/minimizer.cpp
-        src/seed/chain.cpp
+        src/seed/anchor.cpp
 
 )
 
