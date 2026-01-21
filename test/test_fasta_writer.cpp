@@ -180,7 +180,7 @@ TEST_SUITE("write_fasta")
         auto w = seq_io::SeqWriter::Sam(out, /*buffer_threshold_bytes=*/1024);
         w.writeSamHeader("@HD\tVN:1.6\tSO:unknown\n@SQ\tSN:ref\tLN:4\n");
 
-        seq_io::SeqWriter::SamRecord r;
+        seq_io::SamRecord r;
         r.qname = "q1";
         r.flag = 0;
         r.rname = "ref";

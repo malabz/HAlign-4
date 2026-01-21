@@ -742,6 +742,23 @@ namespace align {
                                           const SeedHits* ref_minimizer = nullptr,
                                           const SeedHits* query_minimizer = nullptr);
 
+        // ------------------------------------------------------------------
+        // 辅助函数：removeRefGapColumns
+        // 功能：根据 ref_gap_pos 删除"参考为 gap 的那些列"（原地修改）
+        //
+        // 使用场景：
+        // - 输入序列 seq 通常是"已经过 MSA 对齐"的序列（含 gap）
+        // - ref_gap_pos 记录了参考（第一条序列）每一列是否为 gap
+        // - 本函数会删除所有 ref_gap_pos[i]==true 的列，保留其余列
+        //
+        // 参数：
+        //   - seq: 输入/输出序列（已对齐，包含 gap '-'）【原地修改】
+        //   - ref_gap_pos: 参考（第一条序列）每一列是否为 gap；true 表示该列应被删除
+        // ------------------------------------------------------------------
+        void removeRefGapColumns(
+            std::string& seq,
+            const std::vector<bool>& ref_gap_pos) const;
+
 
         private:
         // ------------------------------------------------------------------
@@ -803,22 +820,6 @@ namespace align {
             std::unordered_map<std::string, cigar::Cigar_t>& out_ref_aligned_map,
             std::vector<bool>& out_ref_gap_pos) const;
 
-        // ------------------------------------------------------------------
-        // 辅助函数：removeRefGapColumns
-        // 功能：根据 ref_gap_pos 删除"参考为 gap 的那些列"（原地修改）
-        //
-        // 使用场景：
-        // - 输入序列 seq 通常是"已经过 MSA 对齐"的序列（含 gap）
-        // - ref_gap_pos 记录了参考（第一条序列）每一列是否为 gap
-        // - 本函数会删除所有 ref_gap_pos[i]==true 的列，保留其余列
-        //
-        // 参数：
-        //   - seq: 输入/输出序列（已对齐，包含 gap '-'）【原地修改】
-        //   - ref_gap_pos: 参考（第一条序列）每一列是否为 gap；true 表示该列应被删除
-        // ------------------------------------------------------------------
-        void removeRefGapColumns(
-            std::string& seq,
-            const std::vector<bool>& ref_gap_pos) const;
 
         // ==================================================================
         // 私有成员变量

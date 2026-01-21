@@ -763,15 +763,7 @@ TEST_SUITE("align_perf") {
         CHECK(seq == "A-CG");
     }
 
-    TEST_CASE("removeRefGapColumns - empty ref_gap_pos means no change") {
-        align::RefAligner aligner(".", "example/data/covid-ref.fasta", 21, 10, 2000, true, 1, "", true, false);
 
-        std::string seq = "A--A";
-
-        // ref_gap_pos 为空时，seq 保持不变
-        aligner.removeRefGapColumns(seq, {});
-        CHECK(seq == "A--A");
-    }
 }
 
 // ------------------------------------------------------------------

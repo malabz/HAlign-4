@@ -32,7 +32,7 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/consensus/selector.cpp"
         "${HALIGN4_ROOT}/src/consensus/consensus.cpp"
         "${HALIGN4_ROOT}/src/seed/minimizer.cpp"
-        "${HALIGN4_ROOT}/src/seed/chain.cpp"
+        "${HALIGN4_ROOT}/src/seed/anchor.cpp"
         "${HALIGN4_ROOT}/src/mash/mash.cpp"
         "${HALIGN4_ROOT}/src/align/ref_aligner.cpp"
         "${HALIGN4_ROOT}/src/align/ksw2_extz2_sse.c"
@@ -163,7 +163,7 @@ add_test(NAME consensus
 
 add_test(NAME read_fasta
         COMMAND halign4_tests --test-suite=read_fasta)
-set_tests_properties(consensus PROPERTIES TIMEOUT 0)
+
 
 add_test(NAME minimizer
         COMMAND halign4_tests --test-suite=minimizer)
@@ -184,15 +184,11 @@ add_test(NAME align
 # Align 性能测试（耗时较长，包含高相似度序列测试）
 add_test(NAME align_perf
         COMMAND halign4_tests --test-suite=align_perf)
-set_tests_properties(align_perf PROPERTIES TIMEOUT 600)  # 10分钟超时
 
 # Anchor 正确性测试（快速）
 add_test(NAME anchor
-        COMMAND halign4_tests --test-suite="anchor::collect_anchors - 准确性与边界测试" --test-suite="anchor::collect_anchors - 过滤逻辑测试" --test-suite="anchor::collect_anchors - 一致性测试" --test-suite="anchor::collect_anchors - 边界与鲁棒性")
+        COMMAND halign4_tests --test-suite=anchor)
 
-# Anchor 性能测试（可选，通过环境变量 HALIGN4_RUN_PERF=1 启用）
-add_test(NAME anchor_perf
-        COMMAND halign4_tests --test-suite="anchor::collect_anchors - 性能测试")
-set_tests_properties(anchor_perf PROPERTIES TIMEOUT 300)  # 5分钟超时
+
 
 

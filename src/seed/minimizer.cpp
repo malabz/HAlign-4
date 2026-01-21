@@ -305,10 +305,11 @@ anchor::Anchors collect_anchors(const MinimizerHits& ref_hits, const MinimizerHi
         const std::size_t ref_occ = idx.count;
 
         // ---- 4.1 --q-occ-frac：query 端过于高频时直接丢弃（降低爆炸风险）
-        // 这里模仿 minimap2 的“query 端高频 + 超过 ref_occ_thr”时丢弃。
+        // minimap2 语义：当 query 端某个 hash 出现次数超过阈值时，直接丢弃该 hash
+        // 这是独立于 ref 端过滤的机制，用于应对 query 端的低复杂度区域
         if (params.q_occ_frac > 0.0) {
             const std::size_t qocc = qry_occ[qry_hash];
-            if (static_cast<double>(qocc) > q_occ_limit && qocc > ref_occ_thr) {
+            if (static_cast<double>(qocc) > q_occ_limit) {
                 continue;
             }
         }

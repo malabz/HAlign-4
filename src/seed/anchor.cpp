@@ -189,13 +189,392 @@ void filterHighFrequencyAnchors(Anchors& anchors, std::size_t max_occ)
         hash_count[anchor.hash]++;
     }
 
-    // 注意：这属于“后过滤”，语义上不同于 minimap2 的 -f/-U（后者在展开 occurrences 前过滤）。
+    // 注意：这属于"后过滤"，语义上不同于 minimap2 的 -f/-U（后者在展开 occurrences 前过滤）。
     auto new_end = std::remove_if(anchors.begin(), anchors.end(),
         [&hash_count, max_occ](const Anchor& anchor) {
             return hash_count[anchor.hash] > max_occ;
         });
 
     anchors.erase(new_end, anchors.end());
+}
+
+// ==================================================================
+// 链化（Chaining）相关函数实现
+// ==================================================================
+//
+// 参考 minimap2/lchain.c 的 mg_lchain_dp 函数实现。
+//
+// minimap2 的链化算法核心思想：
+// 1. 锚点按 (target_pos, query_pos) 排序
+// 2. 使用 DP 计算到达每个锚点的最优累积得分 f[i]
+// 3. 对于每个锚点 i，考虑所有可能的前驱锚点 j (j < i)
+// 4. 两锚点可链接的条件：
+//    - 在同一条参考序列（rid_ref 相同）
+//    - 链方向相同（is_rev 相同）
+//    - 参考距离和查询距离都在允许范围内
+//    - 对角线偏移在带宽内
+// 5. 链化得分 = 基础得分 - 惩罚项
+// 6. 使用 max_skip 和 max_iter 进行剪枝优化
+// 7. 回溯找出所有满足条件的链
+// ==================================================================
+
+// ------------------------------------------------------------------
+// 辅助函数：计算 log2（用于惩罚项，参考 minimap2 的 mg_log2）
+// ------------------------------------------------------------------
+static inline float mg_log2(float x) {
+    // 使用标准库的 log2，对于小数值返回 0
+    return x >= 1.0f ? std::log2(x) : 0.0f;
+}
+
+// ------------------------------------------------------------------
+// chainScoreSimple - 计算两个锚点之间的链化得分
+// ------------------------------------------------------------------
+// 实现细节（对应 minimap2/lchain.c 的 comput_sc_simple）：
+//
+// 输入约定：
+// - ai 是"后面"的锚点（位置更大）
+// - aj 是"前面"的锚点（位置更小）
+//
+// 可链接性检查：
+// - 必须在同一参考序列：ai.rid_ref == aj.rid_ref
+// - 链方向必须相同：ai.is_rev == aj.is_rev
+// - 查询方向 gap (dq) 必须 > 0 且 <= max_dist_x
+// - 参考方向 gap (dr) 必须 > 0（除非是反向链的特殊情况）
+// - 对角线偏移 |dr - dq| 必须 <= bw
+//
+// 得分计算：
+// - 基础得分 = min(span_j, min(dq, dr))
+// - 对角线惩罚 = gap_penalty * |dr - dq| + skip_penalty * min(dr, dq)
+// - 对数惩罚 = 0.5 * log2(|dr - dq| + 1)
+// - 最终得分 = 基础得分 - 对角线惩罚 - 对数惩罚
+// ------------------------------------------------------------------
+std::int32_t chainScoreSimple(const Anchor& ai, const Anchor& aj, const ChainParams& params)
+{
+    // 检查是否在同一参考序列、同一链方向
+    if (ai.rid_ref != aj.rid_ref) return INT32_MIN;
+    if (ai.is_rev != aj.is_rev)   return INT32_MIN;
+
+    // 计算 query 方向的 gap
+    const std::int32_t dq = static_cast<std::int32_t>(ai.pos_qry) - static_cast<std::int32_t>(aj.pos_qry);
+
+    // dq 必须 > 0（ai 必须在 aj 之后）且在允许范围内
+    if (dq <= 0 || dq > params.max_dist_x) return INT32_MIN;
+
+    // 计算 reference 方向的 gap
+    const std::int32_t dr = static_cast<std::int32_t>(ai.pos_ref) - static_cast<std::int32_t>(aj.pos_ref);
+
+    // 对于正向链，dr 也必须 > 0
+    // 对于反向链，由于坐标系不同，规则可能不同
+    // 这里简化处理：要求 dr 在合理范围内
+    if (dr <= 0 || dr > params.max_dist_y) return INT32_MIN;
+
+    // 计算对角线偏移（diagonal deviation）
+    const std::int32_t dd = (dr > dq) ? (dr - dq) : (dq - dr);
+
+    // 对角线偏移必须在带宽内
+    if (dd > params.bw) return INT32_MIN;
+
+    // 计算 gap 的较小值
+    const std::int32_t dg = (dr < dq) ? dr : dq;
+
+    // 基础得分：min(span_j, dg)
+    // span 代表前一个锚点覆盖的长度
+    const std::int32_t q_span = static_cast<std::int32_t>(aj.span);
+    std::int32_t sc = (q_span < dg) ? q_span : dg;
+
+    // 惩罚项（只有当存在 gap 偏差或 gap 大于 span 时才惩罚）
+    if (dd > 0 || dg > q_span) {
+        // 线性惩罚
+        const float lin_pen = params.gap_penalty * static_cast<float>(dd)
+                            + params.skip_penalty * static_cast<float>(dg);
+        // 对数惩罚（对 gap 偏差取对数）
+        const float log_pen = (dd >= 1) ? mg_log2(static_cast<float>(dd + 1)) : 0.0f;
+
+        // 总惩罚 = 线性惩罚 + 0.5 * 对数惩罚
+        sc -= static_cast<std::int32_t>(lin_pen + 0.5f * log_pen);
+    }
+
+    return sc;
+}
+
+// ------------------------------------------------------------------
+// chainAnchors - 使用 DP 对锚点进行链化
+// ------------------------------------------------------------------
+// 实现细节（对应 minimap2/lchain.c 的 mg_lchain_dp）：
+//
+// 算法流程：
+// 1. 对锚点按位置排序：(rid_ref, is_rev, pos_ref, pos_qry)
+// 2. 初始化 DP 数组：
+//    - f[i] : 以锚点 i 结尾的最大链得分
+//    - p[i] : 锚点 i 的最优前驱（-1 表示无前驱）
+//    - v[i] : 到达锚点 i 之前的峰值得分（用于回溯）
+// 3. DP 转移：
+//    对于每个锚点 i，遍历其前面的锚点 j，计算链化得分
+//    f[i] = max{f[j] + score(j, i)} for all valid j
+// 4. 回溯：
+//    从高分锚点开始回溯，提取满足 min_cnt 和 min_score 的链
+//
+// 优化策略：
+// - max_iter: 限制每个锚点考虑的前驱数量
+// - max_skip: 连续跳过的锚点数达到阈值后提前终止
+// - 使用 t[] 数组避免重复访问已处理的锚点
+//
+// 复杂度：
+// - 最坏 O(N^2)，但通过 max_iter/max_skip 剪枝后通常接近 O(N * max_iter)
+// ------------------------------------------------------------------
+Chains chainAnchors(Anchors& anchors, const ChainParams& params)
+{
+    Chains result;
+    const std::int64_t n = static_cast<std::int64_t>(anchors.size());
+
+    if (n == 0) return result;
+
+    // ------------------------------------------------------------------
+    // 步骤 1：按位置排序锚点
+    // 排序键：(rid_ref, is_rev, pos_ref, pos_qry)
+    // 这样同一参考区域的锚点会聚在一起，便于 DP 处理
+    // ------------------------------------------------------------------
+    std::sort(anchors.begin(), anchors.end(),
+        [](const Anchor& a, const Anchor& b) {
+            if (a.rid_ref != b.rid_ref) return a.rid_ref < b.rid_ref;
+            if (a.is_rev != b.is_rev)   return a.is_rev < b.is_rev;
+            if (a.pos_ref != b.pos_ref) return a.pos_ref < b.pos_ref;
+            return a.pos_qry < b.pos_qry;
+        });
+
+    // ------------------------------------------------------------------
+    // 步骤 2：分配 DP 数组
+    // ------------------------------------------------------------------
+    std::vector<std::int32_t> f(n);      // f[i] = 以锚点 i 结尾的最大链得分
+    std::vector<std::int64_t> p(n);      // p[i] = 锚点 i 的最优前驱索引（-1 表示无前驱）
+    std::vector<std::int32_t> v(n);      // v[i] = 到达锚点 i 之前的峰值得分
+    std::vector<std::int32_t> t(n, 0);   // t[i] = 标记数组（用于回溯时避免重复访问）
+
+    // ------------------------------------------------------------------
+    // 步骤 3：DP 填表
+    // ------------------------------------------------------------------
+    // st : 滑动窗口的起始位置（排除距离过远的锚点）
+    std::int64_t st = 0;
+    std::int32_t max_f_global = 0;  // 记录全局最大得分（用于调试）
+
+    for (std::int64_t i = 0; i < n; ++i) {
+        const Anchor& ai = anchors[static_cast<std::size_t>(i)];
+
+        // 初始化：f[i] = span（单锚点自身的得分）
+        std::int32_t max_f = static_cast<std::int32_t>(ai.span);
+        std::int64_t max_j = -1;
+        std::int32_t n_skip = 0;
+
+        // 移动窗口起点：排除距离过远或不同参考序列的锚点
+        while (st < i) {
+            const Anchor& ast = anchors[static_cast<std::size_t>(st)];
+            // 不同参考序列或参考距离超限，则移动窗口
+            if (ast.rid_ref != ai.rid_ref ||
+                ast.is_rev != ai.is_rev ||
+                static_cast<std::int32_t>(ai.pos_ref - ast.pos_ref) > params.max_dist_x) {
+                ++st;
+            } else {
+                break;
+            }
+        }
+
+        // 限制迭代次数
+        std::int64_t iter_start = (i - st > params.max_iter) ? (i - params.max_iter) : st;
+
+        // 从后往前遍历候选前驱
+        for (std::int64_t j = i - 1; j >= iter_start; --j) {
+            const Anchor& aj = anchors[static_cast<std::size_t>(j)];
+
+            // 计算链化得分
+            const std::int32_t sc = chainScoreSimple(ai, aj, params);
+            if (sc == INT32_MIN) continue;
+
+            // 累加前驱的得分
+            const std::int32_t total_sc = f[static_cast<std::size_t>(j)] + sc;
+
+            if (total_sc > max_f) {
+                max_f = total_sc;
+                max_j = j;
+                // 找到更好的前驱，重置 skip 计数
+                if (n_skip > 0) --n_skip;
+            } else if (t[static_cast<std::size_t>(j)] == static_cast<std::int32_t>(i)) {
+                // 这个锚点已经在当前 i 的遍历中被访问过
+                // 如果连续跳过太多次，提前终止
+                if (++n_skip > params.max_skip) break;
+            }
+
+            // 标记 j 的前驱已被访问（用于 max_skip 优化）
+            if (p[static_cast<std::size_t>(j)] >= 0) {
+                t[static_cast<std::size_t>(p[static_cast<std::size_t>(j)])] = static_cast<std::int32_t>(i);
+            }
+        }
+
+        // 记录 DP 结果
+        f[static_cast<std::size_t>(i)] = max_f;
+        p[static_cast<std::size_t>(i)] = max_j;
+
+        // v[i] 记录到当前位置的峰值得分
+        v[static_cast<std::size_t>(i)] = (max_j >= 0 && v[static_cast<std::size_t>(max_j)] > max_f)
+                                       ? v[static_cast<std::size_t>(max_j)] : max_f;
+
+        if (max_f > max_f_global) max_f_global = max_f;
+    }
+
+    // ------------------------------------------------------------------
+    // 步骤 4：回溯提取链
+    // ------------------------------------------------------------------
+    // 按得分从高到低排序，然后回溯
+
+    // 构建 (得分, 索引) 对，用于排序
+    std::vector<std::pair<std::int32_t, std::int64_t>> score_idx;
+    score_idx.reserve(static_cast<std::size_t>(n));
+    for (std::int64_t i = 0; i < n; ++i) {
+        if (f[static_cast<std::size_t>(i)] >= params.min_score) {
+            score_idx.emplace_back(f[static_cast<std::size_t>(i)], i);
+        }
+    }
+
+    // 按得分降序排序
+    std::sort(score_idx.begin(), score_idx.end(),
+        [](const auto& a, const auto& b) { return a.first > b.first; });
+
+    // 重置标记数组用于回溯
+    std::fill(t.begin(), t.end(), 0);
+
+    // 临时存储链中的锚点索引
+    std::vector<std::int64_t> chain_indices;
+
+    for (const auto& [score, end_idx] : score_idx) {
+        // 检查该锚点是否已被其他链使用
+        if (t[static_cast<std::size_t>(end_idx)] != 0) continue;
+
+        // 回溯收集链中的锚点
+        chain_indices.clear();
+        std::int64_t cur = end_idx;
+        while (cur >= 0 && t[static_cast<std::size_t>(cur)] == 0) {
+            chain_indices.push_back(cur);
+            t[static_cast<std::size_t>(cur)] = 1;  // 标记为已使用
+            cur = p[static_cast<std::size_t>(cur)];
+        }
+
+        // 检查链是否满足最小锚点数要求
+        const std::int32_t cnt = static_cast<std::int32_t>(chain_indices.size());
+        if (cnt < params.min_cnt) {
+            // 不满足要求，取消标记
+            for (std::int64_t idx : chain_indices) {
+                t[static_cast<std::size_t>(idx)] = 0;
+            }
+            continue;
+        }
+
+        // 计算链的实际得分
+        // 注意：如果链从中间截断（cur >= 0 时），需要重新计算得分
+        std::int32_t chain_score = (cur < 0)
+            ? f[static_cast<std::size_t>(end_idx)]
+            : (f[static_cast<std::size_t>(end_idx)] - f[static_cast<std::size_t>(cur)]);
+
+        if (chain_score < params.min_score) {
+            for (std::int64_t idx : chain_indices) {
+                t[static_cast<std::size_t>(idx)] = 0;
+            }
+            continue;
+        }
+
+        // 反转使得锚点按位置顺序排列（从前到后）
+        std::reverse(chain_indices.begin(), chain_indices.end());
+
+        // 构建 Chain 结构
+        Chain chain;
+        chain.score = chain_score;
+        chain.cnt = cnt;
+        chain.start_idx = static_cast<std::int32_t>(chain_indices[0]);
+
+        // 计算链的坐标范围
+        const Anchor& first = anchors[static_cast<std::size_t>(chain_indices.front())];
+        const Anchor& last = anchors[static_cast<std::size_t>(chain_indices.back())];
+
+        chain.rid_ref = first.rid_ref;
+        chain.is_rev = first.is_rev;
+        chain.ref_start = first.pos_ref;
+        chain.ref_end = last.pos_ref + last.span;
+        chain.qry_start = first.pos_qry;
+        chain.qry_end = last.pos_qry + last.span;
+
+        result.push_back(chain);
+    }
+
+    // 按得分降序排序（已经是降序的，但为了确保）
+    std::sort(result.begin(), result.end(),
+        [](const Chain& a, const Chain& b) { return a.score > b.score; });
+
+    return result;
+}
+
+// ------------------------------------------------------------------
+// extractChainAnchors - 从链中提取锚点
+// ------------------------------------------------------------------
+// 实现细节：
+// 根据链的 start_idx 和 cnt，从排序后的锚点数组中提取锚点。
+//
+// 注意：
+// - 由于 chainAnchors 使用回溯方式收集链，start_idx 指向链的第一个锚点
+// - 链中的锚点不一定是连续的，这里假设调用者保证一致性
+// - 更安全的做法是在 Chain 中存储所有锚点的索引，但会增加内存开销
+// ------------------------------------------------------------------
+Anchors extractChainAnchors(const Chain& chain, const Anchors& anchors)
+{
+    Anchors result;
+
+    if (chain.cnt <= 0 || chain.start_idx < 0 ||
+        static_cast<std::size_t>(chain.start_idx) >= anchors.size()) {
+        return result;
+    }
+
+    result.reserve(static_cast<std::size_t>(chain.cnt));
+
+    // 由于链化后锚点的存储方式可能变化，这里采用坐标范围提取
+    // 更精确的方法需要在 Chain 中存储所有锚点索引
+    for (std::size_t i = static_cast<std::size_t>(chain.start_idx);
+         i < anchors.size() && static_cast<std::int32_t>(result.size()) < chain.cnt; ++i) {
+        const Anchor& a = anchors[i];
+
+        // 检查是否属于该链（同一 rid_ref 和 is_rev，位置在范围内）
+        if (a.rid_ref == chain.rid_ref && a.is_rev == chain.is_rev) {
+            if (a.pos_ref >= chain.ref_start && a.pos_ref <= chain.ref_end &&
+                a.pos_qry >= chain.qry_start && a.pos_qry <= chain.qry_end) {
+                result.push_back(a);
+            }
+        }
+    }
+
+    return result;
+}
+
+// ------------------------------------------------------------------
+// getBestChain - 获取最佳链
+// ------------------------------------------------------------------
+const Chain* getBestChain(const Chains& chains)
+{
+    if (chains.empty()) return nullptr;
+
+    // 链已按得分降序排序，第一个就是最佳
+    return &chains[0];
+}
+
+// ------------------------------------------------------------------
+// getChainCoverage - 计算链覆盖的区域
+// ------------------------------------------------------------------
+// 返回 (ref_coverage, qry_coverage)：
+// - ref_coverage: 链在参考序列上覆盖的长度
+// - qry_coverage: 链在查询序列上覆盖的长度
+// ------------------------------------------------------------------
+std::pair<std::uint32_t, std::uint32_t> getChainCoverage(const Chain& chain, const Anchors& /*anchors*/)
+{
+    const std::uint32_t ref_cov = (chain.ref_end > chain.ref_start)
+                                ? (chain.ref_end - chain.ref_start) : 0;
+    const std::uint32_t qry_cov = (chain.qry_end > chain.qry_start)
+                                ? (chain.qry_end - chain.qry_start) : 0;
+    return {ref_cov, qry_cov};
 }
 
 } // namespace anchor
