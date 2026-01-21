@@ -125,6 +125,7 @@ add_executable(halign4_tests
         "${CMAKE_CURRENT_LIST_DIR}/test_jaccard.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_fasta_writer.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test_align.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/test_anchor.cpp"
 )
 
 target_link_libraries(halign4_tests PRIVATE halign4_test_support)
@@ -184,5 +185,14 @@ add_test(NAME align
 add_test(NAME align_perf
         COMMAND halign4_tests --test-suite=align_perf)
 set_tests_properties(align_perf PROPERTIES TIMEOUT 600)  # 10分钟超时
+
+# Anchor 正确性测试（快速）
+add_test(NAME anchor
+        COMMAND halign4_tests --test-suite="anchor::collect_anchors - 准确性与边界测试" --test-suite="anchor::collect_anchors - 过滤逻辑测试" --test-suite="anchor::collect_anchors - 一致性测试" --test-suite="anchor::collect_anchors - 边界与鲁棒性")
+
+# Anchor 性能测试（可选，通过环境变量 HALIGN4_RUN_PERF=1 启用）
+add_test(NAME anchor_perf
+        COMMAND halign4_tests --test-suite="anchor::collect_anchors - 性能测试")
+set_tests_properties(anchor_perf PROPERTIES TIMEOUT 300)  # 5分钟超时
 
 

@@ -273,7 +273,7 @@ namespace minimizer
     // 返回：
     //   anchor::Anchors - 锚点列表（未排序）
     // =====================================================================
-    anchor::Anchors collect_anchors(const MinimizerHits& ref_hits, const MinimizerHits& qry_hits);
+    anchor::Anchors collect_anchors(const MinimizerHits& ref_hits, const MinimizerHits& qry_hits, anchor::SeedFilterParams params = anchor::default_mm2_params());
 
 
 

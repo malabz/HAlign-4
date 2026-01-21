@@ -217,7 +217,7 @@ namespace minimizer
 // - 生成 anchors：O(Q * avg_occ_ref_for_hash)
 //   （重复区域会被过滤/稀疏，避免最坏情况爆炸）
 // ------------------------------------------------------------------
-anchor::Anchors collect_anchors(const MinimizerHits& ref_hits, const MinimizerHits& qry_hits)
+anchor::Anchors collect_anchors(const MinimizerHits& ref_hits, const MinimizerHits& qry_hits, anchor::SeedFilterParams params)
 {
     anchor::Anchors anchors;
 
@@ -226,9 +226,6 @@ anchor::Anchors collect_anchors(const MinimizerHits& ref_hits, const MinimizerHi
         return anchors;
     }
 
-    // 获取 minimap2 风格的默认过滤参数
-    // 注意：这些参数会明显影响 anchors 数量与下游 chaining 的速度/准确性。
-    const anchor::SeedFilterParams params = anchor::default_mm2_params();
 
     // ------------------------------------------------------------------
     // Step 1：对 ref_hits 排序 + 构建 hash -> (start, count) 索引
