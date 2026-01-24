@@ -748,7 +748,7 @@ namespace align {
         void mergeAlignedResults(const FilePath& aligned_consensus_path, const std::string& msa_cmd);
 
         // ------------------------------------------------------------------
-        // 静态方法：globalAlign - 全局序列比对（统一接口）
+        // globalAlign - 全局序列比对（统一接口）
         // ------------------------------------------------------------------
         // 功能：
         // 根据两个序列的相似度自动选择合适的比对算法执行全局比对
@@ -788,15 +788,15 @@ namespace align {
         // auto cigar = RefAligner::globalAlign(ref_seq, query_seq, 0.95, ref_mz, query_mz);
         //
         // 设计说明：
-        // - 作为静态方法，不依赖 RefAligner 实例，可独立调用
+        // - 作为 const 成员方法，可以读取成员变量 kmer_size/window_size/noncanonical
         // - 提供统一的比对接口，方便未来扩展多算法支持
         // - 预留 minimizer 参数，避免后续修改所有调用点
         // ------------------------------------------------------------------
-        static cigar::Cigar_t globalAlign(const std::string& ref,
+        cigar::Cigar_t globalAlign(const std::string& ref,
                                           const std::string& query,
                                           double similarity,
                                           const SeedHits* ref_minimizer = nullptr,
-                                          const SeedHits* query_minimizer = nullptr);
+                                          const SeedHits* query_minimizer = nullptr) const;
 
         // ------------------------------------------------------------------
         // 辅助函数：removeRefGapColumns

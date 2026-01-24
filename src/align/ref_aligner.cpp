@@ -2,6 +2,7 @@
 #include "config.hpp"
 #include "preprocess.h"    // alignConsensusSequence
 #include "consensus.h"     // generateConsensusSequence
+#include "seed.h"          // minimizer 提取和锚点生成
 #include <algorithm>
 #include <cstddef>
 #include <fstream>         // std::ifstream, std::ofstream
@@ -179,32 +180,58 @@ namespace align {
                                            const std::string& query,
                                            double similarity,
                                            const SeedHits* ref_minimizer,
-                                           const SeedHits* query_minimizer)
+                                           const SeedHits* query_minimizer) const
     {
-        // 当前实现：直接使用 WFA2 全局比对
-        // 注意：similarity、ref_minimizer、query_minimizer 参数当前未使用，但保留接口用于未来优化
-        //
+        // ------------------------------------------------------------------
+        // 自适应比对策略（基于相似度）
+        // ------------------------------------------------------------------
         // 设计理由：
-        // 1. WFA2 对大部分场景都有较好的性能表现
-        // 2. 避免算法切换带来的一致性问题
-        // 3. 简化实现，降低维护成本
+        // 1. **高相似度（≥ 0.95）**：使用 WFA2
+        //    - WFA2 在编辑距离小（高相似度）时性能优异
+        //    - 时间复杂度 O(s * N)，s 为编辑距离，N 为序列长度
+        //    - 对于 ≥95% 相似度，WFA2 通常比 KSW2/MM2 更快
         //
-        // TODO（未来优化）：
-        // - 当 similarity < 0.7 时，考虑切换到 KSW2
-        // - 添加序列长度阈值判断（长序列可能需要带宽限制）
-        // - 支持通过配置文件选择算法策略
-        // - 利用 ref_minimizer 和 query_minimizer 进行种子定位和锚点比对
-        // - 对于超长序列（>100kb），可先用 minimizer 分段，再逐段比对
-        if (similarity < 0.95)
-        {
+        // 2. **低相似度（< 0.95）**：使用 MM2（minimap2 风格的锚点比对）
+        //    - 低相似度时编辑距离大，WFA2 性能下降
+        //    - MM2 通过锚点分段，将长序列比对拆分为多个小区间
+        //    - 对于长序列和低相似度场景，MM2 性能更好
+        //    - 需要 minimizer 锚点支持（如果提供则使用，否则自动生成）
+        //
+        // 相似度阈值选择：
+        // - 0.95 是经验阈值，平衡 WFA2 和 MM2 的性能
+        // - 可根据实际场景调整（见下方参数说明）
+        // ------------------------------------------------------------------
+
+        constexpr double kSimilarityThreshold = 0.90;  // 相似度阈值（可调整：0.90-0.98）
+
+        if (similarity >= kSimilarityThreshold) {
             return globalAlignWFA2(ref, query);
+        } else {
+            // ----------------------------------------------------------
+            // 低相似度：使用 MM2（基于锚点的分段比对）
+            // ----------------------------------------------------------
+            anchor::Anchors anchors;
+            minimizer::MinimizerHits ref_hits;
+            minimizer::MinimizerHits qry_hits;
+
+            if (ref_minimizer != nullptr && !ref_minimizer->empty())
+            {
+                ref_hits = *ref_minimizer;
+            }else
+            {
+                ref_hits = minimizer::extractMinimizer(ref, kmer_size, window_size, noncanonical);
+            }
+            if (query_minimizer != nullptr && !query_minimizer->empty())
+            {
+                qry_hits = *query_minimizer;
+            }else
+            {
+                qry_hits = minimizer::extractMinimizer(query, kmer_size, window_size, noncanonical);
+            }
+            anchors = minimizer::collect_anchors(ref_hits, qry_hits);
+            return globalAlignMM2(ref, query, anchors);
+
         }
-
-        (void)similarity;        // 明确标记：当前未使用该参数，避免编译器警告
-        (void)ref_minimizer;     // 明确标记：当前未使用该参数，避免编译器警告
-        (void)query_minimizer;   // 明确标记：当前未使用该参数，避免编译器警告
-
-        return globalAlignWFA2(ref, query);
     }
 
 
@@ -349,7 +376,7 @@ namespace align {
         // - 使用 RefAligner::globalAlign 而非直接调用 globalAlignWFA2
         // - 传递 ref_minimizer 和 query_minimizer，允许未来根据种子信息优化比对
         // - 允许未来根据相似度自动选择最优算法
-        const cigar::Cigar_t initial_cigar = RefAligner::globalAlign(
+        cigar::Cigar_t initial_cigar = RefAligner::globalAlign(
             best_ref.seq,
             q.seq,
             best_j,
@@ -376,7 +403,7 @@ namespace align {
 
         const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
 
-        const cigar::Cigar_t recheck_cigar = RefAligner::globalAlign(
+        cigar::Cigar_t recheck_cigar = RefAligner::globalAlign(
             consensus_seq.seq,
             q.seq,
             consensus_similarity,
