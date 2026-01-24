@@ -215,10 +215,10 @@ namespace align
 
         // heuristic：自适应 band 策略，限制波前带宽以加速
         // 注意：heuristic 的启发式会影响速度与最优性，本项目当前选择偏速度。
-        attributes.heuristic.strategy = wf_heuristic_banded_adaptive;
-        attributes.heuristic.min_k = -50;
-        attributes.heuristic.max_k = +50;
-        attributes.heuristic.steps_between_cutoffs = 1;
+        // attributes.heuristic.strategy = wf_heuristic_banded_adaptive;
+        // attributes.heuristic.min_k = -200;
+        // attributes.heuristic.max_k = +200;
+        // attributes.heuristic.steps_between_cutoffs = 1;
 
         // 2) 创建 aligner（堆对象，需要 delete）
         wavefront_aligner_t* const wf_aligner = wavefront_aligner_new(&attributes);
