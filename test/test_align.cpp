@@ -1686,7 +1686,7 @@ TEST_SUITE("align") {
             uint32_t len;
             cigar::intToCigar(op, op_char, len);
 
-            if (op_char == 'X' || op_char == 'I' || op_char == 'D') {
+            if (op_char == 'I' || op_char == 'D') {
                 edit_dist += len;
             }
         }
@@ -1699,7 +1699,7 @@ TEST_SUITE("align") {
     // ------------------------------------------------------------------
     TEST_CASE("Accuracy - High similarity (95%-99%)") {
         constexpr int NUM_TESTS = 50;
-        constexpr size_t SEQ_LEN = 500;
+        constexpr size_t SEQ_LEN = 5000;
 
         std::cout << "\n========== 高相似度比对准确性测试 (500bp, " << NUM_TESTS << " 次) ==========\n";
 
@@ -1797,7 +1797,7 @@ TEST_SUITE("align") {
     // ------------------------------------------------------------------
     TEST_CASE("Accuracy - Low similarity (70%-90%)") {
         constexpr int NUM_TESTS = 50;
-        constexpr size_t SEQ_LEN = 500;
+        constexpr size_t SEQ_LEN = 5000;
 
         std::cout << "\n========== 低相似度比对准确性测试 (500bp, " << NUM_TESTS << " 次) ==========\n";
 

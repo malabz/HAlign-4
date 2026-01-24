@@ -511,11 +511,11 @@ namespace align
             // 使用自适应比对策略
             cigar::Cigar_t left_cigar = adaptive_align(left_ref, left_qry);
             cigar::appendCigar(result_cigar, left_cigar);
-
-            // 更新位置
-            ref_pos = first_ref_start;
-            qry_pos = first_qry_start;
         }
+
+        // 更新位置到第一个锚点起始（无论是否有左端区域）
+        ref_pos = first_ref_start;
+        qry_pos = first_qry_start;
 
         // ------------------------------------------------------------------
         // 4.2 遍历锚点，处理锚点覆盖区域和锚点之间的间隙
@@ -523,18 +523,18 @@ namespace align
         for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
             const auto& anchor = chain_anchors[i];
 
+            std::size_t anchor_ref_start = anchor.pos_ref;
+            std::size_t anchor_qry_start = anchor.pos_qry;
+            std::size_t anchor_span = anchor.span > 0 ? anchor.span : 1;
+
             // 边界检查：确保锚点位置在序列范围内
-            if (anchor.pos_ref >= ref_len || anchor.pos_qry >= qry_len) {
+            if (anchor_ref_start >= ref_len || anchor_qry_start >= qry_len) {
 #ifdef _DEBUG
                 spdlog::warn("globalAlignMM2: anchor {} out of bounds (ref: {}/{}, qry: {}/{}), skipping",
                              i, anchor.pos_ref, ref_len, anchor.pos_qry, qry_len);
 #endif
-                continue;
+                continue;  // 跳过越界锚点，不更新 ref_pos/qry_pos
             }
-
-            std::size_t anchor_ref_start = anchor.pos_ref;
-            std::size_t anchor_qry_start = anchor.pos_qry;
-            std::size_t anchor_span = anchor.span > 0 ? anchor.span : 1;
 
             // 计算锚点结束位置（确保不超出序列边界）
             std::size_t anchor_ref_end = std::min(anchor_ref_start + anchor_span, ref_len);
@@ -552,7 +552,7 @@ namespace align
 
                 // 如果调整后锚点已经被完全处理，跳过
                 if (anchor_ref_start >= anchor_ref_end || anchor_qry_start >= anchor_qry_end) {
-                    continue;
+                    continue;  // 跳过已处理的锚点，不更新 ref_pos/qry_pos
                 }
             }
 
@@ -594,14 +594,77 @@ namespace align
             // ------------------------------------------------------------
             // 4.2.2 处理锚点覆盖的区域
             // ------------------------------------------------------------
+            // **锚点可靠性验证**：
+            // 在测试场景或实际应用中，锚点位置可能不够精确。
+            // 我们需要验证锚点区域是否真的匹配，而不是盲目信任。
+            //
+            // 策略：
+            // 1. 检查锚点两端长度差异
+            // 2. 如果长度差异过大（>20%），说明锚点位置不准确
+            // 3. 此时将锚点区域当作普通间隙处理（进行完整比对）
+            // 4. 如果长度接近，正常处理锚点
+            // ------------------------------------------------------------
             std::size_t anchor_ref_len = anchor_ref_end - anchor_ref_start;
             std::size_t anchor_qry_len = anchor_qry_end - anchor_qry_start;
 
             if (anchor_ref_len > 0 || anchor_qry_len > 0) {
+                // **可靠性检查**：锚点长度差异阈值
+                const std::size_t max_len = std::max(anchor_ref_len, anchor_qry_len);
+                const std::size_t min_len = std::min(anchor_ref_len, anchor_qry_len);
+                const double length_ratio = (max_len > 0) ? (double)min_len / (double)max_len : 1.0;
+
+                // 如果长度比例 < 0.8，说明锚点不可靠（可能位置偏移严重）
+                constexpr double kMinLengthRatio = 0.8;
+
+                if (length_ratio < kMinLengthRatio) {
+#ifdef _DEBUG
+                    spdlog::debug(
+                        "globalAlignMM2: anchor {} unreliable (ref_len={}, qry_len={}, ratio={:.2f}), align it as a gap to keep coverage",
+                        i, anchor_ref_len, anchor_qry_len, length_ratio);
+#endif
+                    // ------------------------------------------------------------------
+                    // 修复说明（关键）：
+                    // 之前这里用 continue，会导致 [anchor_ref_start, anchor_ref_end) 与
+                    // [anchor_qry_start, anchor_qry_end) 这段区间没有被任何 CIGAR 覆盖。
+                    // 尤其在低相似度/含indel的测试里，锚点坐标本身可能不准确，
+                    // “跳过锚点”会让 ref_pos/qry_pos 卡在锚点起点，最终总长度对不上。
+                    //
+                    // 正确做法：把该锚点区间当作普通 gap 立即比对并推进位置，
+                    // 这样即使锚点是错的，也不会造成覆盖缺口。
+                    // ------------------------------------------------------------------
+                    {
+                        const std::string unreliable_ref = ref.substr(anchor_ref_start, anchor_ref_len);
+                        const std::string unreliable_qry = query.substr(anchor_qry_start, anchor_qry_len);
+
+                        cigar::Cigar_t unreliable_cigar = adaptive_align(unreliable_ref, unreliable_qry);
+
+                        // 双重保险：adaptive_align 理论上保证全覆盖，但这里再校验一次
+                        const std::size_t u_ref = cigar::getRefLength(unreliable_cigar);
+                        const std::size_t u_qry = cigar::getQueryLength(unreliable_cigar);
+                        if (u_ref != anchor_ref_len || u_qry != anchor_qry_len) {
+#ifdef _DEBUG
+                            spdlog::warn(
+                                "globalAlignMM2: unreliable-anchor cigar mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{}), fallback to global",
+                                anchor_ref_len, anchor_qry_len, u_ref, u_qry);
+#endif
+                            unreliable_cigar = globalAlignKSW2(unreliable_ref, unreliable_qry);
+                        }
+
+                        cigar::appendCigar(result_cigar, unreliable_cigar);
+
+                        // 推进到锚点结束，保证后续 right region 计算正确
+                        ref_pos = anchor_ref_end;
+                        qry_pos = anchor_qry_end;
+                    }
+
+                    continue;
+                }
+
+                // 锚点可靠，进行正常比对
                 std::string anchor_ref_seq = ref.substr(anchor_ref_start, anchor_ref_len);
                 std::string anchor_qry_seq = query.substr(anchor_qry_start, anchor_qry_len);
 
-                // 对锚点区域也进行比对，确保精确性
+                // 对锚点区域进行比对
                 cigar::Cigar_t anchor_cigar = globalAlignKSW2(anchor_ref_seq, anchor_qry_seq);
 
                 // 验证锚点 CIGAR 的正确性
@@ -628,21 +691,47 @@ namespace align
         // ------------------------------------------------------------------
         // 4.3 处理最后一个锚点之后的右端区域
         // ------------------------------------------------------------------
+        // 说明：此时 ref_pos 和 qry_pos 应该指向最后一个锚点的结束位置
+        // 需要比对从这个位置到序列末尾的所有剩余碱基
         if (ref_pos < ref_len || qry_pos < qry_len) {
             std::size_t right_ref_len = ref_len - ref_pos;
             std::size_t right_qry_len = qry_len - qry_pos;
+
+#ifdef _DEBUG
+            spdlog::debug("globalAlignMM2: processing right region (ref_pos={}, qry_pos={}, right_ref_len={}, right_qry_len={})",
+                          ref_pos, qry_pos, right_ref_len, right_qry_len);
+#endif
 
             std::string right_ref = ref.substr(ref_pos, right_ref_len);
             std::string right_qry = query.substr(qry_pos, right_qry_len);
 
             // 使用自适应比对策略
             cigar::Cigar_t right_cigar = adaptive_align(right_ref, right_qry);
+
+            // 验证右端 CIGAR 的正确性
+            std::size_t right_cigar_ref = cigar::getRefLength(right_cigar);
+            std::size_t right_cigar_qry = cigar::getQueryLength(right_cigar);
+            if (right_cigar_ref != right_ref_len || right_cigar_qry != right_qry_len) {
+#ifdef _DEBUG
+                spdlog::warn("globalAlignMM2: right region CIGAR mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{})",
+                             right_ref_len, right_qry_len, right_cigar_ref, right_cigar_qry);
+#endif
+                // Fallback：使用全局比对确保正确性
+                right_cigar = globalAlignKSW2(right_ref, right_qry);
+            }
+
             cigar::appendCigar(result_cigar, right_cigar);
 
             // 更新位置（已处理完整个序列）
-            ref_pos = ref_len;
-            qry_pos = qry_len;
+            ref_pos += right_ref_len;
+            qry_pos += right_qry_len;
         }
+
+#ifdef _DEBUG
+        // 调试：输出最终位置信息
+        spdlog::debug("globalAlignMM2: final positions after processing all regions (ref_pos={}/{}, qry_pos={}/{})",
+                      ref_pos, ref_len, qry_pos, qry_len);
+#endif
 
         // ------------------------------------------------------------------
         // 5. 验证：确保 CIGAR 消耗的序列长度与输入一致
@@ -679,3 +768,4 @@ namespace align
         return result_cigar;
     }
 }
+
