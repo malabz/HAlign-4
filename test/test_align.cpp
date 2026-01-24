@@ -6,6 +6,7 @@
 #include <iostream>
 #include <iomanip>
 #include "align.h"
+#include "seed.h"  // 用于 minimizer 提取和锚点生成
 
 // ------------------------------------------------------------------
 // 辅助函数：生成随机 DNA 序列
@@ -159,6 +160,41 @@ static std::string generateComplexSVSequence(const std::string& ref,
     }
 
     return result;
+}
+
+// ------------------------------------------------------------------
+// 辅助函数：生成真实的锚点（基于 minimizer 匹配）
+// ------------------------------------------------------------------
+// 说明：
+// 之前的测试用例使用固定位置锚点（假设 ref/query 在相同位置对齐），
+// 但经过 mutateSequence 后，由于 indel，这些锚点完全不准确。
+//
+// 本函数使用 minimizer 提取真实的共享 k-mer，生成准确的锚点：
+// 1) 从 ref 和 query 中分别提取 minimizer
+// 2) 使用 collect_anchors 找到匹配的 minimizer hits
+// 3) 返回真实的锚点列表
+//
+// 参数：
+// @param ref - 参考序列
+// @param query - 查询序列
+// @param k - k-mer 大小（默认 15）
+// @param w - 窗口大小（默认 10）
+// @return 真实的锚点列表
+// ------------------------------------------------------------------
+static anchor::Anchors generateRealAnchors(const std::string& ref,
+                                           const std::string& query,
+                                           std::size_t k = 15,
+                                           std::size_t w = 10) {
+    // 1) 提取 ref 的 minimizer
+    minimizer::MinimizerHits ref_hits = minimizer::extractMinimizer(ref, k, w, false);
+
+    // 2) 提取 query 的 minimizer
+    minimizer::MinimizerHits qry_hits = minimizer::extractMinimizer(query, k, w, false);
+
+    // 3) 收集锚点（找到匹配的 minimizer）
+    anchor::Anchors anchors = minimizer::collect_anchors(ref_hits, qry_hits);
+
+    return anchors;
 }
 
 // ------------------------------------------------------------------
@@ -1721,22 +1757,23 @@ TEST_SUITE("align") {
             algorithm_stats["WFA2"];
             algorithm_stats["MM2"];
 
+            // 锚点统计
+            size_t total_anchors = 0;
+            size_t min_anchors = std::numeric_limits<size_t>::max();
+            size_t max_anchors = 0;
+
             for (int i = 0; i < NUM_TESTS; ++i) {
                 std::string ref = generateRandomDNA(SEQ_LEN, i * 3);
                 std::string query = mutateSequence(ref, snp_rate, indel_rate, i * 3 + 1);
 
-                anchor::Anchors anchors;
-                for (size_t pos = 0; pos + 20 < SEQ_LEN; pos += 100) {
-                    anchor::Anchor a;
-                    a.hash = pos * 1000 + i;
-                    a.rid_ref = 0;
-                    a.pos_ref = static_cast<uint32_t>(pos);
-                    a.rid_qry = 0;
-                    a.pos_qry = static_cast<uint32_t>(pos);
-                    a.span = 20;
-                    a.is_rev = false;
-                    anchors.push_back(a);
-                }
+                // 生成真实的锚点（基于 minimizer 匹配）
+                // k=15, w=10：适合高相似度场景的参数
+                anchor::Anchors anchors = generateRealAnchors(ref, query, 15, 10);
+
+                // 统计锚点
+                total_anchors += anchors.size();
+                min_anchors = std::min(min_anchors, anchors.size());
+                max_anchors = std::max(max_anchors, anchors.size());
 
                 // KSW2
                 {
@@ -1779,6 +1816,9 @@ TEST_SUITE("align") {
             }
 
             std::cout << "\n相似度 " << (similarity * 100) << "%:\n";
+            std::cout << "  [锚点] 平均=" << (total_anchors / NUM_TESTS)
+                      << ", 最小=" << (min_anchors == std::numeric_limits<size_t>::max() ? 0 : min_anchors)
+                      << ", 最大=" << max_anchors << "\n";
             for (const auto& [name, stats] : algorithm_stats) {
                 double accuracy = 100.0 * stats.valid_cigars / stats.total_tests;
                 double avg_dist = stats.avg_edit_dist / stats.total_tests;
@@ -1823,18 +1863,9 @@ TEST_SUITE("align") {
                 std::string ref = generateRandomDNA(SEQ_LEN, i * 3);
                 std::string query = mutateSequence(ref, snp_rate, indel_rate, i * 3 + 1);
 
-                anchor::Anchors anchors;
-                for (size_t pos = 0; pos + 15 < SEQ_LEN; pos += 150) {
-                    anchor::Anchor a;
-                    a.hash = pos * 1000 + i;
-                    a.rid_ref = 0;
-                    a.pos_ref = static_cast<uint32_t>(pos);
-                    a.rid_qry = 0;
-                    a.pos_qry = static_cast<uint32_t>(pos);
-                    a.span = 15;
-                    a.is_rev = false;
-                    anchors.push_back(a);
-                }
+                // 生成真实的锚点（低相似度场景：使用更小的 k 和 w）
+                // k=13, w=8：低相似度时需要更宽松的参数以获得足够的锚点
+                anchor::Anchors anchors = generateRealAnchors(ref, query, 13, 8);
 
                 // KSW2
                 {
@@ -1920,18 +1951,8 @@ TEST_SUITE("align") {
                 std::string ref = generateRandomDNA(SEQ_LEN, i * 3);
                 std::string query = mutateSequence(ref, 0.01, level.indel_rate, i * 3 + 1);
 
-                anchor::Anchors anchors;
-                for (size_t pos = 0; pos + 15 < SEQ_LEN; pos += 80) {
-                    anchor::Anchor a;
-                    a.hash = pos * 1000 + i;
-                    a.rid_ref = 0;
-                    a.pos_ref = static_cast<uint32_t>(pos);
-                    a.rid_qry = 0;
-                    a.pos_qry = static_cast<uint32_t>(pos);
-                    a.span = 15;
-                    a.is_rev = false;
-                    anchors.push_back(a);
-                }
+                // Indel 密集区域：使用更小的 k 值以容忍更多变异
+                anchor::Anchors anchors = generateRealAnchors(ref, query, 11, 6);
 
                 if (verifyCigar(ref, query, align::globalAlignKSW2(ref, query))) ksw2_valid++;
                 if (verifyCigar(ref, query, align::RefAligner::globalAlign(ref, query, 0.90))) wfa2_valid++;
@@ -2039,6 +2060,7 @@ TEST_SUITE("align") {
             std::cout << "  MM2:  " << mm2_acc << "% (" << mm2_valid << "/" << NUM_TESTS << ")\n\n";
         }
 
+        std::cout << "备注：单个 SV 场景相对简单，所有算法应能较好处理\n";
         std::cout << "========================================================\n\n";
     }
 
@@ -2083,19 +2105,8 @@ TEST_SUITE("align") {
                 std::string ref = generateRandomDNA(SEQ_LEN, i * 5);
                 std::string query = generateComplexSVSequence(ref, complex_case.events, i * 5 + 1);
 
-                // 生成稀疏锚点（复杂 SV 场景下锚点不够可靠）
-                anchor::Anchors anchors;
-                for (size_t pos = 0; pos + 20 < SEQ_LEN; pos += 200) {
-                    anchor::Anchor a;
-                    a.hash = pos * 1000 + i;
-                    a.rid_ref = 0;
-                    a.pos_ref = static_cast<uint32_t>(pos);
-                    a.rid_qry = 0;
-                    a.pos_qry = static_cast<uint32_t>(pos);
-                    a.span = 20;
-                    a.is_rev = false;
-                    anchors.push_back(a);
-                }
+                // 复杂 SV：使用更保守的参数（较小的 k 和 w）
+                anchor::Anchors anchors = generateRealAnchors(ref, query, 11, 6);
 
                 if (verifyCigar(ref, query, align::globalAlignKSW2(ref, query))) ksw2_valid++;
                 if (verifyCigar(ref, query, align::RefAligner::globalAlign(ref, query, 0.80))) wfa2_valid++;
@@ -2142,19 +2153,10 @@ TEST_SUITE("align") {
                 std::string ref = generateRandomDNA(len, i * 3);
                 std::string query = mutateSequence(ref, SNP_RATE, INDEL_RATE, i * 3 + 1);
 
-                size_t anchor_interval = std::max(size_t(50), len / 10);
-                anchor::Anchors anchors;
-                for (size_t pos = 0; pos + 20 < len; pos += anchor_interval) {
-                    anchor::Anchor a;
-                    a.hash = pos * 1000 + i;
-                    a.rid_ref = 0;
-                    a.pos_ref = static_cast<uint32_t>(pos);
-                    a.rid_qry = 0;
-                    a.pos_qry = static_cast<uint32_t>(pos);
-                    a.span = 20;
-                    a.is_rev = false;
-                    anchors.push_back(a);
-                }
+                // 根据长度调整 k 和 w（长序列用更大的 k）
+                std::size_t k = len < 1000 ? 13 : 15;
+                std::size_t w = len < 1000 ? 8 : 10;
+                anchor::Anchors anchors = generateRealAnchors(ref, query, k, w);
 
                 if (verifyCigar(ref, query, align::globalAlignKSW2(ref, query))) ksw2_valid++;
                 if (verifyCigar(ref, query, align::RefAligner::globalAlign(ref, query, SIMILARITY))) wfa2_valid++;
