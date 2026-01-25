@@ -246,7 +246,7 @@ Conceptually, the pipeline will drop columns where `ref1` is `-`, so the alignme
 
 ```text
 ref1  ACGTAC   (ref1 has no '-')
-ref2  ACGT-C   (column was removed, ref2 becomes ungapped here)
+ref2  ACGT-C   (column was removed where ref1 had '-')
 q1    ACGTAC   (query is projected accordingly)
 ```
 
