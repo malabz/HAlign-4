@@ -7,6 +7,7 @@
 #include <iomanip>
 #include "align.h"
 #include "seed.h"  // 用于 minimizer 提取和锚点生成
+#include "mash.h"  // 用于计算 Mash 相似度
 
 // ------------------------------------------------------------------
 // 辅助函数：生成随机 DNA 序列
@@ -808,6 +809,48 @@ TEST_SUITE("align_perf") {
                 }
                 anchors_list.push_back(anchors);
             }
+
+            // ========== Mash 相似度计算 ==========
+            // 使用 Mash sketch 计算实际的 Jaccard 相似度和 ANI
+            {
+                constexpr std::size_t MASH_K = 21;          // k-mer 大小
+                constexpr std::size_t MASH_SKETCH_SIZE = 2000; // sketch 大小
+
+                double total_jaccard = 0.0;
+                double total_ani = 0.0;
+                int valid_count = 0;
+
+                // 对前 20 对序列计算 Mash 相似度（避免计算开销过大）
+                int mash_sample_size = std::min(20, NUM_RUNS);
+                for (int i = 0; i < mash_sample_size; ++i) {
+                    const auto& [ref, query] = test_pairs[i];
+
+                    // 生成 sketch
+                    auto sketch_ref = mash::sketchFromSequence(ref, MASH_K, MASH_SKETCH_SIZE);
+                    auto sketch_query = mash::sketchFromSequence(query, MASH_K, MASH_SKETCH_SIZE);
+
+                    // 计算 Jaccard 相似度
+                    double j = mash::jaccard(sketch_ref, sketch_query);
+
+                    // 计算 ANI（Average Nucleotide Identity）
+                    double ani = mash::aniFromJaccard(j, MASH_K);
+
+                    total_jaccard += j;
+                    total_ani += ani;
+                    valid_count++;
+                }
+
+                if (valid_count > 0) {
+                    double avg_jaccard = total_jaccard / valid_count;
+                    double avg_ani = total_ani / valid_count;
+
+                    std::cout << "  Mash 相似度 (k=" << MASH_K << ", s=" << MASH_SKETCH_SIZE << "):\n";
+                    std::cout << "    Jaccard: " << std::fixed << std::setprecision(4) << avg_jaccard
+                              << "  ANI: " << std::setprecision(2) << (avg_ani * 100.0) << "%\n";
+                }
+            }
+
+            // ========== 比对性能测试 ==========
 
             // KSW2 测试
             {

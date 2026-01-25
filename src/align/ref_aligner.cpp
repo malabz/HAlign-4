@@ -182,31 +182,13 @@ namespace align {
                                            const SeedHits* ref_minimizer,
                                            const SeedHits* query_minimizer) const
     {
-        // ------------------------------------------------------------------
-        // 自适应比对策略（基于相似度）
-        // ------------------------------------------------------------------
-        // 设计理由：
-        // 1. **高相似度（≥ 0.95）**：使用 WFA2
-        //    - WFA2 在编辑距离小（高相似度）时性能优异
-        //    - 时间复杂度 O(s * N)，s 为编辑距离，N 为序列长度
-        //    - 对于 ≥95% 相似度，WFA2 通常比 KSW2/MM2 更快
-        //
-        // 2. **低相似度（< 0.95）**：使用 MM2（minimap2 风格的锚点比对）
-        //    - 低相似度时编辑距离大，WFA2 性能下降
-        //    - MM2 通过锚点分段，将长序列比对拆分为多个小区间
-        //    - 对于长序列和低相似度场景，MM2 性能更好
-        //    - 需要 minimizer 锚点支持（如果提供则使用，否则自动生成）
-        //
-        // 相似度阈值选择：
-        // - 0.95 是经验阈值，平衡 WFA2 和 MM2 的性能
-        // - 可根据实际场景调整（见下方参数说明）
-        // ------------------------------------------------------------------
 
-        constexpr double kSimilarityThreshold = 0.90;  // 相似度阈值（可调整：0.90-0.98）
+        constexpr double min_similarity = 0.5;  //
+        constexpr double min_coverage = 0.5;  //
         int len_diff = std::abs(static_cast<int>(ref.size()) - static_cast<int>(query.size()));
         double coverage = 1.0 - static_cast<double>(len_diff) / std::max(ref.size(), query.size());
 
-        if (similarity >= kSimilarityThreshold && coverage >= 0.5) {
+        if (similarity >= min_similarity && coverage >= min_coverage) {
             return globalAlignWFA2(ref, query);
         } else {
             // ----------------------------------------------------------
@@ -230,9 +212,17 @@ namespace align {
             {
                 qry_hits = minimizer::extractMinimizer(query, kmer_size, window_size, noncanonical);
             }
-            anchors = minimizer::collect_anchors(ref_hits, qry_hits);
-            return globalAlignMM2(ref, query, anchors);
 
+            anchors = minimizer::collect_anchors(ref_hits, qry_hits);
+
+            if (similarity >= min_similarity)
+            {
+                return globalAlignMM2(ref, query, anchors, globalAlignWFA2);
+            }
+            else
+            {
+                return globalAlignMM2(ref, query, anchors, globalAlignKSW2);
+            }
         }
     }
 

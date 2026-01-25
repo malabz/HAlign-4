@@ -571,10 +571,32 @@ namespace align {
 
     // cigar::Cigar_t extendAlignWFA2(const std::string& ref, const std::string& query, int zdrop = 200);
 
+    // ------------------------------------------------------------------
+    // 类型别名：比对函数类型
+    // ------------------------------------------------------------------
+    // 用于 globalAlignMM2 等函数，可以传入不同的比对算法（KSW2 或 WFA2）
+    // 函数签名：接受两个序列（ref, query），返回 CIGAR
+    using AlignFunc = std::function<cigar::Cigar_t(const std::string&, const std::string&)>;
 
+    // ------------------------------------------------------------------
+    // 函数：globalAlignMM2
+    // 功能：基于锚点（anchors）的分段全局比对
+    // 参数：
+    //   - ref: 参考序列
+    //   - query: 查询序列
+    //   - anchors: 锚点集合（用于链化和分段）
+    //   - align_func: 可选的比对函数（默认使用 globalAlignKSW2）
+    //                 可以传入 globalAlignWFA2 或其他符合签名的比对函数
+    // 返回：完整的 CIGAR 序列
+    // 说明：
+    //   - 使用锚点将序列分解为多个小片段，分别比对后拼接
+    //   - 通过 align_func 参数可以灵活选择底层比对算法
+    //   - 如果锚点为空或无效，会退化为 align_func 的全局比对
+    // ------------------------------------------------------------------
     cigar::Cigar_t globalAlignMM2(const std::string& ref,
                                   const std::string& query,
-                                  const anchor::Anchors& anchors);
+                                  const anchor::Anchors& anchors,
+                                  AlignFunc align_func = nullptr);
 
     // ==================================================================
     // RefAligner 类：高性能参考序列比对器（多序列比对 MSA 引擎）

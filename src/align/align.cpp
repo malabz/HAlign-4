@@ -335,31 +335,38 @@ namespace align
     // ------------------------------------------------------------------
     cigar::Cigar_t globalAlignMM2(const std::string& ref,
                                   const std::string& query,
-                                  const anchor::Anchors& anchors)
+                                  const anchor::Anchors& anchors,
+                                  AlignFunc align_func)
     {
         // ------------------------------------------------------------------
-        // 保守实现：锚点分割 + KSW2 全局比对（保证 CIGAR 一定正确）
+        // 保守实现：锚点分割 + 可选比对算法（保证 CIGAR 一定正确）
         // ------------------------------------------------------------------
-        // 目标：
-        // 1) 使用 anchors 进行 chain，得到一条“最佳链”作为分段边界参考
+        // 说明：
+        // 1) 使用 anchors 进行 chain，得到一条"最佳链"作为分段边界参考
         // 2) 将 (ref,query) 拆成：左端 + (锚点间gap + 锚点span段)* + 右端
-        // 3) 每一段都用 globalAlignKSW2 做 end-to-end 全局比对
-        // 4) **关键正确性策略**：每段比对完后，不用我们“猜测”的长度推进位置，
+        // 3) 每一段都用传入的 align_func（默认 globalAlignKSW2）做 end-to-end 全局比对
+        // 4) **关键正确性策略**：每段比对完后，不用我们"猜测"的长度推进位置，
         //    而是用 cigar::getRefLength/getQueryLength 从 CIGAR 反推实际消耗长度。
         //    这样可以避免之前因为 anchor 坐标不精确/重叠/空洞造成的长度错配。
         //
         // 性能：
         // - 相比直接全局比对，此版本在锚点可靠时会分解成多个小矩阵，通常更快。
-        // - 但由于每一段都是真全局 KSW2，可能比“extend+fallback”慢。
+        // - 但由于每一段都是真全局比对，可能比"extend+fallback"慢。
+        // - 通过 align_func 参数可以灵活选择 WFA2 或 KSW2，适应不同场景。
         // - 目前优先保证正确性。
         // ------------------------------------------------------------------
+
+        // 如果未传入比对函数，默认使用 globalAlignKSW2
+        if (!align_func) {
+            align_func = globalAlignKSW2;
+        }
 
         const std::size_t ref_len = ref.size();
         const std::size_t qry_len = query.size();
 
-        // 0) 无锚点直接退化为全局
+        // 0) 无锚点直接退化为全局比对（使用传入的比对函数）
         if (anchors.empty()) {
-            return globalAlignKSW2(ref, query);
+            return align_func(ref, query);
         }
 
         // 1) 链化：拿到最佳链
@@ -367,7 +374,7 @@ namespace align
         anchor::ChainParams chain_params = anchor::default_chain_params();
         anchor::Anchors chain_anchors = anchor::chainAnchors(sorted_anchors, chain_params);
         if (chain_anchors.empty()) {
-            return globalAlignKSW2(ref, query);
+            return align_func(ref, query);
         }
 
 
@@ -399,7 +406,7 @@ namespace align
             const std::string seg_ref = ref.substr(ref_start, ref_end - ref_start);
             const std::string seg_qry = query.substr(qry_start, qry_end - qry_start);
 
-            cigar::Cigar_t seg_cigar = globalAlignKSW2(seg_ref, seg_qry);
+            cigar::Cigar_t seg_cigar = align_func(seg_ref, seg_qry);
 
             // 严格校验本段 CIGAR 覆盖长度
             const std::size_t seg_ref_len = seg_ref.size();
