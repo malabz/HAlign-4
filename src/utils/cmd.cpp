@@ -149,13 +149,9 @@ namespace cmd
                     ok = false; break;
                 }
                 ofs <<
-                    R"(>seq1
-    ACGTACGTGA
-    >seq2
-    ACGTTGCA
-    >seq3
-    ACGTACGA
-    ))";
+                    ">seq1\nACGTACGTGA\n"
+                    ">seq2\nACGTTGCA\n"
+                    ">seq3\nACGTACGA\n";
              }
 
              std::string cmd_line;

@@ -815,6 +815,7 @@ namespace align {
         cigar::Cigar_t tmp_insertion_cigar =  insertion_aligned_map[consensus_seq.id];
         while (cons_reader.next(cons_rec))
         {
+            seq_io::cleanSequence(cons_rec);
             // ------------------------------------------------------------------
             // 步骤 4.1.1：移除共识序列中的 gap 列（可选）
             // ------------------------------------------------------------------
