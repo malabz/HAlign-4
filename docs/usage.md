@@ -4,9 +4,11 @@ This document explains the command-line arguments of `halign4` and provides runn
 
 > Notes
 >
-> - `halign4` needs **three mandatory arguments**: `-i/--input`, `-o/--output`, `-w/--workdir`.
+> - `halign4` needs **two mandatory arguments**: `-i/--input` and `-o/--output`.
+> - `-w/--workdir` is optional. If not provided, the program will create a default workdir: `./tmp-<random>`.
 > - Some options are validated by CLI11 at parse time (for example `-i` requires an existing file).
-> - `-p/--msa-cmd` is currently validated as an **existing file path** (a template file), **not** a raw command string.
+> - `-p/--msa-cmd` supports **keywords** (`minipoa` / `mafft` / `clustalo`) and also supports a **custom command template string**.
+>   It is **not** required to be a file path.
 
 ---
 
@@ -17,8 +19,7 @@ Minimal run (uses built-in defaults):
 ```bash
 ./build/halign4 \
   -i test/data/mt1x.fasta.gz \
-  -o out.fasta \
-  -w work
+  -o out.fasta
 ```
 
 ---
@@ -38,15 +39,18 @@ Output file path. The main result is written here.
 
 - Validation: required (but does not need to exist)
 
+---
+
+### Optional
+
+#### `-v, --version`
+Print version information and exit.
+
 #### `-w, --workdir <path>`
 Working directory used for intermediate files.
 
 - The program will create sub-directories under this path (for example `data/`, `temp/`, `result/`).
 - **Important**: some builds may require `workdir` to be empty to avoid overwriting previous outputs (see project README).
-
----
-
-### Optional
 
 #### `-t, --thread <int>`
 Number of CPU threads.
@@ -81,19 +85,37 @@ Provide an explicit center/reference sequence file (FASTA).
 - If provided, the program will use these sequences as the reference/center set instead of auto-selecting.
 - Validation: must exist (`CLI::ExistingFile`)
 
-#### `-p, --msa-cmd <path>`
-Path to a **text file** that contains the MSA command template.
+#### `-p, --msa-cmd <string>`
+MSA command **keyword** or **command template string**.
 
-- Validation: must exist (`CLI::ExistingFile`)
-- The template may contain placeholders:
-  - `{input}`: required, replaced with the input file path for MSA
-  - `{output}`: required, replaced with the output file path for MSA
-  - `{thread}`: optional, replaced with the integer from `-t/--thread`
+Supported keywords:
+
+- `minipoa` (default)
+- `mafft`
+- `clustalo`
+
+If you provide a custom template string, it may contain placeholders:
+
+- `{input}`: required, replaced with the input FASTA path for the external MSA
+- `{output}`: required, replaced with the output FASTA path for the external MSA
+- `{thread}`: optional, replaced with the integer from `-t/--thread`
 
 Built-in default template (used when you don’t pass `-p`):
 
 ```text
 minipoa {input} -S -t {thread} -r1 > {output}
+```
+
+Built-in MAFFT template:
+
+```text
+mafft --thread {thread} --auto {input} > {output}
+```
+
+Built-in Clustal Omega template:
+
+```text
+clustalo -i {input} -o {output} --threads {thread}
 ```
 
 Important note:
@@ -134,7 +156,7 @@ Keep the working directory after successful completion.
 
 ## Examples
 
-### Example 1: Minimal dataset (`mt1x`) + demonstrate `-p/--msa-cmd` (using MAFFT)
+### Example 1: Minimal dataset (`mt1x`) + demonstrate `-p/--msa-cmd` (using MAFFT keyword)
 
 Dataset:
 
@@ -143,27 +165,17 @@ Dataset:
 Goal:
 
 - Show the most basic run.
-- Show how to use `-p` correctly (pass a **template file path**).
+- Show how to use `-p` with the new keyword mapping.
 
-1) Create a template file (example: `mafft.template.txt`):
-
-```text
-mafft --thread {thread} --auto {input} > {output}
-```
-
-Why this looks different from the built-in minipoa template:
-
-- MAFFT writes alignment to stdout by default, so redirection (`> {output}`) is the simplest portable pattern.
-
-2) Run:
+Run:
 
 ```bash
 ./build/halign4 \
   -i test/data/mt1x.fasta.gz \
   -o mt1x.out.fasta \
-  -w mt1x.work \
-  -t 8 \
-  -p mafft.template.txt
+   -w mt1x.work \
+   -t 8 \
+  -p mafft
 ```
 
 If you don’t have `mafft` installed, either install it or switch the template file back to a command that exists in your environment.
@@ -274,5 +286,7 @@ What to take away:
 
 ## Troubleshooting
 
-- **`-p/--msa-cmd` rejects my command string**: this is expected. `-p` needs a *file path* to a template file (validated by `ExistingFile`).
+- **`-p/--msa-cmd` fails at startup even though the tool exists**: `halign4` runs a tiny self-check during argument validation.
+  If it fails, try running the expanded command manually to see stderr, or use a custom template.
+  On Windows/WSL setups, make sure `halign4` and the external MSA tool are in the **same environment** (both in WSL or both native).
 - **Workdir already exists**: remove it, choose a new `-w`, or build/run in Debug mode if your build allows reusing a non-empty workdir.
