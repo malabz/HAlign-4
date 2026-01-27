@@ -51,17 +51,17 @@ static void checkOption(Options& opt) {
 #endif
     file_io::prepareEmptydir(opt.workdir, must_be_empty);
 
-    std::string msa_cmd_str = DEFAULT_MSA_CMD;
-    if (!opt.msa_cmd.empty()) {
-        file_io::requireRegularFile(opt.msa_cmd, "msa_cmd");
-        msa_cmd_str = opt.msa_cmd;
-    }
+    // msa_cmd：允许输入关键字（minipoa/mafft/clustalo）或自定义模板。
+    // 关键点：这里不做“文件存在性”校验，因为这些工具通常依赖 PATH 搜索。
+    // 真正的可执行性验证交给下面的 testCommandTemplate（会实际运行一次小样例）。
+    const std::string msa_cmd_str = resolveMsaCmdTemplate(opt.msa_cmd);
 
     if (cmd::testCommandTemplate(msa_cmd_str, opt.workdir, opt.threads)) {
         spdlog::info("msa_cmd template test passed.");
     } else {
         throw std::runtime_error("msa_cmd template test failed.");
     }
+    // 规范化：后续模块统一使用“最终模板字符串”，避免重复判断关键字
     opt.msa_cmd = msa_cmd_str;
 
     // 可选：确保输出父目录存在（如果你希望自动创建）

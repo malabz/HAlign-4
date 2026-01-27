@@ -47,6 +47,41 @@ const std::string MAFFT_MSA_CMD = "mafft --thread {thread} --auto {input} > {out
 const std::string CLUSTALO_MSA_CMD = "clustalo -i {input} -o {output} --threads {thread}"; // Clustal Omega 多序列比对命令模板示例
 
 const std::string DEFAULT_MSA_CMD = MINIPOA_CMD; // 默认多序列比对命令模板
+
+// ------------------------------------------------------------------
+// resolveMsaCmdTemplate：把用户在 -p/--msa-cmd 中输入的内容解析成“最终命令模板”。
+//
+// 需求：
+// - 当用户输入 minipoa / mafft / clustalo 时，自动使用对应的内置模板命令；
+// - 当用户输入的是自定义模板（包含 {input}/{output} 等占位符）时，保持原样；
+// - 当用户不输入 -p 时，沿用 DEFAULT_MSA_CMD，不改变现有默认行为。
+
+// 设计说明（正确性/可用性）：
+// - 不能再把 -p 当作“文件路径”去校验（ExistingFile / requireRegularFile），因为这些工具名通常依赖 PATH。
+// - 这里只对“完全等于关键字”的情况做映射，避免误伤用户自定义命令（例如 "mafft --auto ..."）。
+// ------------------------------------------------------------------
+inline std::string resolveMsaCmdTemplate(const std::string& user_value) {
+    // trim：去除两端空白，避免用户误输入空格导致关键字匹配失败
+    const auto start = user_value.find_first_not_of(" \t\n\r");
+    if (start == std::string::npos) {
+        return DEFAULT_MSA_CMD;
+    }
+    const auto end = user_value.find_last_not_of(" \t\n\r");
+    std::string v = user_value.substr(start, end - start + 1);
+
+    // tolower：关键字大小写不敏感
+    for (char& c : v) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+
+    if (v == "minipoa") return MINIPOA_CMD;
+    if (v == "mafft") return MAFFT_MSA_CMD;
+    if (v == "clustalo") return CLUSTALO_MSA_CMD;
+
+    // 其他情况：认为是用户自定义模板，原样返回
+    return user_value;
+}
+
 // 工作目录体系
 const std::string WORKDIR_DATA = "data";         // 原始数据目录
 const std::string WORKDIR_TMP = "temp";         // 临时目录（短生命周期文件）
@@ -144,7 +179,7 @@ static std::string makeDefaultWorkdir() {
 
 struct Options {
 	// 输入/输出与工作目录
-	std::string input;          // -i：输入序列文件（路径或压缩文件）
+	std::string input;          // -i：输入序列文件（路径或拷贝文件）
 	std::string output;         // -o：最终输出文件（写入位置）
 	std::string workdir;        // -w：工作目录，所有中间文件（data/raw, data/clean 等）放在该目录下
 
@@ -202,8 +237,12 @@ static void setupCli(CLI::App& app, Options& opt) {
 
     // 如果 -p 是“可执行文件路径”，ExistingFile 通常也能用；
     // 若你希望允许仅命令名（在 PATH 中），这里就不要 check
-    app.add_option("-p,--msa-cmd", opt.msa_cmd, "High-quality method command path")
-        ->check(CLI::ExistingFile);
+    // msa-cmd：支持关键字或自定义命令模板。
+    // - 关键字：minipoa / mafft / clustalo
+    // - 自定义模板：例如 "mafft --thread {thread} --auto {input} > {output}"
+    // 注意：这里不能使用 ExistingFile 校验，否则关键字/命令名会被错误拒绝。
+    app.add_option("-p,--msa-cmd", opt.msa_cmd,
+                   "MSA command template or keyword {minipoa|mafft|clustalo}");
 
     app.add_option("-t,--thread", opt.threads, "Number of threads")
         ->default_val(get_default_threads())

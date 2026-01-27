@@ -4,11 +4,10 @@ package:
 
 source:
   git_url: https://github.com/pinglu-zhang/HAlign-4.git
-  # 建议固定 tag/commit，保证可复现
   # git_rev: v2.0.0
 
 build:
-  number: 0
+  number: 1
 
 requirements:
   build:
@@ -16,24 +15,27 @@ requirements:
     - {{ compiler('cxx') }}
     - cmake
     - make
-    - pkg-config
+
   host:
     - zlib
     - libcurl
-    - llvm-openmp  # 给 find_package(OpenMP) 提供 runtime/headers（Linux 下很稳）
+    - llvm-openmp
     - sysroot_linux-64 2.17
+
   run:
     - zlib
     - libcurl
     - llvm-openmp
     - mafft
     - minipoa
+    - clustalo
 
 test:
   commands:
     - halign4 -h
     - mafft --version
     - minipoa -h
+    - clustalo --version
 
 about:
   home: https://github.com/pinglu-zhang/HAlign-4
