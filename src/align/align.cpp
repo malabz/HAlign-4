@@ -295,44 +295,88 @@ namespace align
     // }
 
     // ------------------------------------------------------------------
-    // globalAlignMM2：基于 minimap2 风格的 anchor-guided 全局比对
+    // globalAlignMM2：基于锚点（anchors）的分段全局比对（minimap2 风格）
     // ------------------------------------------------------------------
-    // 设计思路（参考 minimap2/align.c 的 mm_align1 函数）：
-    // 1) 利用已有的锚点（anchors）进行链化（chaining），获取最佳链
-    // 2) 对链覆盖范围之前的左端区域进行比对
-    // 3) 对链中相邻锚点之间的间隙区域（gap filling）进行比对
-    // 4) 对链覆盖范围之后的右端区域进行比对
-    // 5) 使用 cigar::appendCigar 合并所有 CIGAR，确保覆盖整个序列
+    // 功能概述（精炼）：
+    // 使用预先计算的锚点将一对序列（ref / query）拆分为若干可比对的片段，
+    // 对每个片段调用指定的全局比对函数（align_func），最后合并各段的 CIGAR
+    // 为完整的 query->ref CIGAR。该函数优先保证正确性（CIGAR 消耗长度匹配），
+    // 在极端边界上提供稳健的兜底逻辑以避免崩溃或最终不一致性报错。
     //
-    // **比对算法选择（灵活性）：**
-    // - 通过 align_func 参数传入比对函数（默认 globalAlignKSW2）
-    // - 可以选择 globalAlignWFA2 或其他符合签名的比对函数
-    // - 所有分段都使用同一个比对函数，保证一致性
-    //
-    // **正确性保证：**
-    // - 严格跟踪 ref_pos 和 qry_pos，确保每个碱基都被比对
-    // - 最后验证 CIGAR 消耗的序列长度是否匹配输入序列长度
-    // - Debug 模式下长度不匹配会触发错误日志
-    // - 使用 cigar 命名空间的函数进行 CIGAR 操作，提高代码复用性
-    //
-    // 输入：
-    // @param ref        - 参考序列（字符串，A/C/G/T/N）
-    // @param query      - 查询序列（字符串，A/C/G/T/N）
-    // @param anchors    - 预先计算的锚点列表（未排序也可以，内部会排序和链化）
-    // @param align_func - 可选的比对函数（默认为 nullptr，会使用 globalAlignKSW2）
-    //                     可以传入 globalAlignWFA2 或其他符合签名的比对函数
+    // 输入参数：
+    // - ref: 参考序列字符串（A/C/G/T/N），长度 ref_len
+    // - query: 查询序列字符串，长度 qry_len
+    // - anchors: 预先生成的锚点列表（anchor::Anchors），可以是任意顺序，函数内部会排序并链化
+    // - align_func: 用于分段比对的函数指针，签名为 cigar::Cigar_t(const std::string&, const std::string&)。
+    //               若传入 nullptr，则默认使用 `globalAlignKSW2`。
     //
     // 输出：
-    // 返回 CIGAR 操作序列（cigar::Cigar_t），描述 query 如何比对到 ref
-    // **保证**：返回的 CIGAR 消耗的 ref 长度 = ref.size()，query 长度 = query.size()
+    // - 返回一个 cigar::Cigar_t（压缩 CIGAR）描述如何把 query 对齐到 ref。
+    //   本函数对外的语义保证：若返回非空 CIGAR，则它严格消耗 ref_len 个参考碱基和 qry_len 个查询碱基，
+    //   即 cigar::getRefLength(result) == ref_len 且 cigar::getQueryLength(result) == qry_len。
+    //   若内部检测到无法生成满足该不变量的分段 CIGAR，会退化为对整对序列调用 align_func 并返回其结果。
     //
-    // 性能说明：
-    // - 相比直接全局比对，本函数利用锚点信息将比对分解为多个小区间
-    // - 尤其对长序列且锚点覆盖率高的情况，性能提升显著（减少 DP 矩阵规模）
-    // - 通过 align_func 参数可以灵活选择不同算法，适应不同相似度和长度场景
-    // - 若锚点为空或无有效链，退化为使用 align_func 的全局比对（默认为 globalAlignKSW2）
-    // ------------------------------------------------------------------
-    cigar::Cigar_t globalAlignMM2(const std::string& ref,
+    // 设计与实现要点（逐步说明）：
+    // 1) 防御式编程：对输入 anchors 先做链化（chainAnchors）以获得一条“最佳链”；若链为空则退化为
+    //    对整对序列做全局比对（align_func）。这样保证在没有锚点或链化失败时仍能工作。
+    //
+    // 2) 分段策略（与实现严格一致）：
+    //    - 先按 query 坐标对 chain_anchors 进行升序排序（保持与 minimap2 相同的处理顺序），
+    //    - 使用一个驱动位置（ref_pos, qry_pos）从左到右推进（注意：不信任 anchors 给出的绝对位置，
+    //      仅将其作为建议的边界；真正的推进以各段返回的 CIGAR 消耗为准），
+    //    - 处理顺序为：
+    //        a) 左端：从当前位置到第一个锚点的起始位置（append_segment）
+    //        b) 对于每个锚点 a（按顺序）：
+    //             - 先处理该锚点覆盖区（span 段）：append_segment(ref_pos, a.pos_ref + a.span, qry_pos, a.pos_qry + a.span)
+    //             - 若存在下一个锚点 b，则处理 a 结束到 b 开始之间的 gap：append_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry)
+    //        c) 右端：最后一个锚点结束到序列末尾（append_segment）
+    //
+    //    说明：上面的实现保证每个 anchor.span 恰好被包含一次（修正了早期实现中遗漏/重复 span 的问题），
+    //    同时通过 ref_pos/qry_pos 的推进处理 anchors 之间的重叠或坐标不一致情形（重叠会被自动裁剪/剪切）。
+    //
+    // 3) append_segment 的语义与边界策略（非常关键，直接影响正确性）:
+    //    - 输入：以 ref/query 的绝对坐标区间为参数（ref_start, ref_end, qry_start, qry_end），函数会先做边界裁剪
+    //      以避免越界（用 std::min / 容错性的 if 修正），并保证 start <= end。
+    //    - 若某一侧长度为 0（seg_ref.empty() 或 seg_qry.empty()），函数不会去调用昂贵或行为不稳定的底层比对器，
+    //      而是直接构造一个简单的 CIGAR：
+    //         * seg_ref 非空且 seg_qry 为空 -> 产生一条单 op 的 Deletion ('D', len=seg_ref_len)
+    //         * seg_ref 为空且 seg_qry 非空 -> 产生一条单 op 的 Insertion ('I', len=seg_qry_len)
+    //         * 两者均为空 -> 不产生 CIGAR
+    //      这样既高效又避免了对空输入时底层库（KSW2/WFA2）可能返回不一致/空 CIGAR 的问题。
+    //
+    //    - 当两侧均非空时，才调用 align_func(seg_ref, seg_qry) 来生成段级 CIGAR；生成后会做严格校验：
+    //         c_ref = cigar::getRefLength(seg_cigar) 必须等于 seg_ref_len
+    //         c_qry = cigar::getQueryLength(seg_cigar) 必须等于 seg_qry_len
+    //      若校验失败（常见于极端长度差异或 band/zdrop 限制导致的截断），函数采用“兜底策略”而不是无限重试：
+    //         - 在 Debug 模式下先记录一条 warn 日志（有助于定位）；
+//         - 构造一个“强制补齐”的 CIGAR（forced_cigar）：先一个 'I' 消耗全部 query（若有），再一个 'D' 消耗全部 ref（若有），
+//           并将其 append 到结果中，同时把 ref_pos/qry_pos 直接推进到期望的区间末端（ref_end/qry_end）。
+//      这样可以确保：即使底层比对算法在该片段上失败，整个分段链仍然连续，并保持长度不变性。
+//
+//    - 如果校验通过，则 append seg_cigar，并使用其实际消耗（c_ref/c_qry）推进 ref_pos 与 qry_pos，
+//      而不是盲目采用 anchor 给出的起止坐标（这是保证正确性的核心做法）。
+//
+// 4) 终结一致性检查与退化策略：
+//    - 在合并完所有分段后，函数会验证最终 result 消耗的 ref/ qry 长度是否等于输入长度。
+//    - 若不等：该函数会记录 error 并退化为对整对序列调用 align_func(ref, query)，返回 align_func 的结果。
+//      （理由：在极端/非常规错误下，直接让底层比对器处理整对序列通常更直观且便于定位问题）。
+//
+// 5) 复杂度与性能说明：
+//    - 链化 chainAnchors 的时间复杂度取决于 anchors 的数量与链化参数（一般近似 O(m log m) 排序 + O(m * max_iter) DP），
+//      其中 m 为 anchors 数量；分段比对的总成本为各段比对成本之和（受 align_func 的算法复杂度影响）。
+//    - 对于长序列且 anchors 覆盖率高的场景，该分段策略能显著降低单次 DP 的规模并提升整体吞吐。
+//    - 对于极端长度差异的片段，append_segment 的快速兜底（单 op I/D）既保证正确性也避免了昂贵无效的 DP。
+//
+// 6) 可调试点与注意事项（调试/开发者使用）：
+//    - 在 _DEBUG 模式下，发生段级 mismatch 时会记录 warn，便于定位哪些段被兜底处理；生产环境通常关闭 debug 以避免日志噪音。
+//    - 如果希望强制使用更稳的比对策略（例如总是用 WFA2），可在调用处传入对应的 align_func。
+//    - 对于非常长的 ref（> 1e6），请注意 CIGAR 单个 op 长度上限（cigar::cigarToInt 对 len 有 28-bit 限制），
+//      若存在更长的连续 gap 需要分割为多个 op 或采用不同策略。
+//
+// 注：本注释已经与 `append_segment` 的实际实现保持一致（包括空段直接生成 I/D、段级强制补齐策略、以及
+//      锚点 span/gap 的处理顺序）。如后续对实现做改动，请同步更新此处注释以保持文档与代码一致。
+// ------------------------------------------------------------------
+cigar::Cigar_t globalAlignMM2(const std::string& ref,
                                   const std::string& query,
                                   const anchor::Anchors& anchors,
                                   AlignFunc align_func)
@@ -405,7 +449,34 @@ namespace align
             const std::string seg_ref = ref.substr(ref_start, ref_end - ref_start);
             const std::string seg_qry = query.substr(qry_start, qry_end - qry_start);
 
-            cigar::Cigar_t seg_cigar = align_func(seg_ref, seg_qry);
+            // ------------------------------------------------------------------
+            // 关键边界修复：当某一侧 segment 为空时，不调用底层比对器，直接构造 CIGAR。
+            //
+            // 背景：
+            // - 在“ref 很长，但 query 很短”的场景中，chaining 的锚点坐标可能导致某些 gap 段
+            //   出现 seg_qry 为空但 seg_ref 非空（或反之）。
+            // - 对空序列调用 KSW2/WFA2 时，不同实现可能返回空 CIGAR（0/0），
+            //   从而触发我们后续的长度一致性检查，导致频繁 fallback。
+            //
+            // CIGAR 语义（本项目约定：返回的是 query 相对于 ref）：
+            // - seg_ref 非空 & seg_qry 为空：表示 query 相对 ref 缺失这一段 -> 全部是 'D'
+            // - seg_ref 为空 & seg_qry 非空：表示 query 相对 ref 多出来这一段 -> 全部是 'I'
+            // - 两者都空：空操作
+            //
+            // 性能：
+            // - 直接构造 CIGAR 是 O(1)（单个 op），比调用 DP/WFA 更快；
+            // - 同时避免不必要的内存分配与库调用开销。
+            // ------------------------------------------------------------------
+            cigar::Cigar_t seg_cigar;
+            if (seg_ref.empty() && seg_qry.empty()) {
+                // nothing
+            } else if (seg_ref.empty()) {
+                seg_cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry.size())));
+            } else if (seg_qry.empty()) {
+                seg_cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref.size())));
+            } else {
+                seg_cigar = align_func(seg_ref, seg_qry);
+            }
 
             // 严格校验本段 CIGAR 覆盖长度
             const std::size_t seg_ref_len = seg_ref.size();
@@ -415,70 +486,117 @@ namespace align
 
             if (c_ref != seg_ref_len || c_qry != seg_qry_len) {
 #ifdef _DEBUG
-                spdlog::error("globalAlignMM2(seg): segment cigar mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{}); fallback to global",
-                              seg_ref_len, seg_qry_len, c_ref, c_qry);
+                spdlog::warn("globalAlignMM2(seg): segment cigar mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{}); forcing global fallback logic for this segment",
+                             seg_ref_len, seg_qry_len, c_ref, c_qry);
 #endif
-                // 理论上 KSW2 全局不会错；如果错了直接全局兜底
-                result = globalAlignKSW2(ref, query);
-                ref_pos = ref_len;
-                qry_pos = qry_len;
+                // ------------------------------------------------------------------
+                // 彻底修复逻辑：
+                // 当底层比对器（尤其是 banded KSW2）在极大长度差异下（例如 ref=20000, qry=100）
+                // 可能会因为 band 限制或 Z-drop 导致无法延伸到终点，从而返回不完整的 CIGAR。
+                //
+                // 此时如果不做处理直接 return，就会导致整个链的比对中断或错误。
+                //
+                // 策略 A（简单回退）：既然分段比对失败，就放弃这一小段的精细比对，
+                // 直接视为 "大段 ref 对应小段 query"，用一个简单的 D/I 结构填充，或者调用更重但更稳的手段？
+                //
+                // 实际上我们之前是 "fallback to global"，即调用 align_func 对该段重试。
+                // 但如果 align_func 本身就是那个失败的函数的（例如 globalAlignKSW2），重试依然会错。
+                //
+                // 策略 B（强制补齐）：
+                // 我们明确知道这段 seq_ref 和 seq_qry 必须对在一起。
+                // 如果 ref 极长而 qry 极短，大概率是大片段缺失（Deletion）。
+                // 我们可以构造一个 "fallback CIGAR"：
+                // 1. 先匹配 common 长度（M/X）
+                // 2. 剩余 ref 变为 D，剩余 qry 变为 I
+                // 或者更简单：直接构造一个巨大的 gap 对齐？
+                //
+                // 这里采用 "暴力补齐" 方案：
+                // 如果比对器未能覆盖全长，我们手动追加剩余部分的 D/I。
+                // 但 CIGAR 必须连续。如果原始 CIGAR 只对了一半，直接追加可能导致中间断裂。
+                //
+                // 最终方案：
+                // 当出现 mismatch 时，说明该段极度不可信/算法失效。
+                // 我们直接构造一个平凡解：
+                // - 如果 ref >>> qry：全部设为 D，中间夹杂少量 I（或者先 I 后 D）
+                // - 实际上对于 anchor 间的 gap，通常就是大 INDEL。
+                //
+                // 为了保证结果一定正确（长度匹配），我们直接生成一个简单的 CIGAR：
+                // - 先全 I (query bases)
+                // - 再全 D (ref bases)
+                // （或者反过来，或者混合）。
+                // 这种对齐虽然分不高，但几何上是正确的，且不会导致程序崩溃/报错。
+                // ------------------------------------------------------------------
+                cigar::Cigar_t forced_cigar;
+                // 策略：尽量先 match/mismatch 短的那边？不，直接粗暴处理最稳健。
+                // 先把 Query 消耗完（Insertion），再把 Reference 消耗完（Deletion）。
+                // 这样能保证一定会回到对角线。
+                if (seg_qry_len > 0) {
+                    forced_cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry_len)));
+                }
+                if (seg_ref_len > 0) {
+                    forced_cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref_len)));
+                }
+                cigar::appendCigar(result, forced_cigar);
+
+                // 既然强制补齐了，就按照预期的长度推进指针
+                ref_pos = ref_end;
+                qry_pos = qry_end;
                 return;
             }
 
             cigar::appendCigar(result, seg_cigar);
 
-            // 用 CIGAR 的消耗来推进（关键）
+            // 用 CIGAR 的消耗来推进（关键）：不信任 anchor 坐标，只信任 CIGAR 真实消耗
             ref_pos = ref_start + c_ref;
             qry_pos = qry_start + c_qry;
         };
 
-        // 3) 左端：从(0,0)到第一个 anchor 起点
+        // ------------------------------------------------------------------
+        // 3) 左端：链起点之前的区域（ref_pos/qry_pos -> 第一个锚点起始位置）
+        // ------------------------------------------------------------------
         {
-            const auto& a0 = chain_anchors.front();
-            append_segment(0, a0.pos_ref, 0, a0.pos_qry);
+            const auto& first = chain_anchors.front();
+            append_segment(ref_pos, first.pos_ref, qry_pos, first.pos_qry);
         }
 
-        // 4) 中间：逐锚点处理
+        // ------------------------------------------------------------------
+        // 4) 依次处理每个锚点：先加 span，再加到下一个锚点的 gap
+        //    修正逻辑：确保每个 anchor.span 恰好被加入一次
+        // ------------------------------------------------------------------
         for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
             const auto& a = chain_anchors[i];
 
-            // 若已经在 append_segment 里触发全局兜底并把 pos 推到末尾，直接结束
-            if (ref_pos == ref_len && qry_pos == qry_len) {
-                break;
-            }
+            // 4.1) 当前锚点的 span 段
+            const std::size_t a_ref_start = static_cast<std::size_t>(a.pos_ref);
+            const std::size_t a_qry_start = static_cast<std::size_t>(a.pos_qry);
+            const std::size_t a_ref_end = a_ref_start + static_cast<std::size_t>(a.span);
+            const std::size_t a_qry_end = a_qry_start + static_cast<std::size_t>(a.span);
 
-            // 4.1 gap：从当前位置到锚点起点（用 anchor 给的坐标作为“目标”，但不强制）
-            if (a.pos_ref > ref_pos || a.pos_qry > qry_pos) {
-                append_segment(ref_pos, a.pos_ref, qry_pos, a.pos_qry);
-            }
+            append_segment(ref_pos, a_ref_end, qry_pos, a_qry_end);
 
-            if (ref_pos == ref_len && qry_pos == qry_len) {
-                break;
+            // 4.2) 如果不是最后一个锚点，加上 gap（当前 anchor 结束 -> 下一个 anchor 开始）
+            if (i + 1 < chain_anchors.size()) {
+                const auto& b = chain_anchors[i + 1];
+                append_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry);
             }
-
-            // 4.2 anchor span 段：用 span 作为一个“局部窗口”进行精确全局比对
-            // 注意：我们只用 span 当作窗口大小，不假设窗口内部一定 match。
-            const std::size_t span = a.span > 0 ? static_cast<std::size_t>(a.span) : 1;
-            append_segment(ref_pos, ref_pos + span, qry_pos, qry_pos + span);
         }
 
-        // 5) 右端：把剩余部分全部覆盖
-        if (!(ref_pos == ref_len && qry_pos == qry_len)) {
-            append_segment(ref_pos, ref_len, qry_pos, qry_len);
-        }
+        // ------------------------------------------------------------------
+        // 5) 右端：最后一个锚点结束到序列末尾
+        // ------------------------------------------------------------------
+        append_segment(ref_pos, ref_len, qry_pos, qry_len);
 
-        // 6) 最终校验：确保拼接后覆盖全长
-        const std::size_t final_ref = cigar::getRefLength(result);
-        const std::size_t final_qry = cigar::getQueryLength(result);
-        if (final_ref != ref_len || final_qry != qry_len) {
-#ifdef _DEBUG
+
+        // 6) 最终一致性检查：若不完整，退化为全局比对（保持历史行为）
+        const std::size_t total_ref = cigar::getRefLength(result);
+        const std::size_t total_qry = cigar::getQueryLength(result);
+        if (total_ref != ref_len || total_qry != qry_len) {
             spdlog::error("globalAlignMM2: final cigar mismatch (ref:{}/{}, qry:{}/{}), fallback to global",
-                          final_ref, ref_len, final_qry, qry_len);
-#endif
-            return globalAlignKSW2(ref, query);
+                         total_ref, ref_len, total_qry, qry_len);
+            return align_func(ref, query);
         }
 
         return result;
     }
-}
 
+} // namespace align

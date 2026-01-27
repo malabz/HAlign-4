@@ -67,4 +67,5 @@ See [`docs/test.md`](docs/test.md) for how to run tests under the `test/` direct
 ## Citation
 
 If you use HAlign-4 in academic work, please cite:
-https://doi.org/10.1093/bioinformatics/btae718
+
+HAlign 4: a new strategy for rapidly aligning millions of sequences. Bioinformatics, 2024, 40(12): btae718. https://doi.org/10.1093/bioinformatics/btae718
