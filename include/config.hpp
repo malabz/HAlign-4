@@ -218,21 +218,46 @@ static void setupCli(CLI::App& app, Options& opt) {
     app.set_version_flag("-v,--version", std::string("halign4 version ") + VERSION);
 
    // 必须参数（同时支持短参数和长参数）
-    app.add_option("-i,--input", opt.input, "Input sequences (file path)")
+    // -i/--input：输入序列（FASTA）。
+    // 说明：
+    // - 必须是本地文件路径（当前实现会在参数校验阶段检查是否存在）；
+    // - 文件格式建议为 .fasta/.fa（内部读取使用 kseq）。
+    // 示例：-i test/data/mt1x/mt1x.fasta
+    app.add_option("-i,--input", opt.input,
+                   "Input sequences in FASTA format (local file path).")
         ->required()
         ->check(CLI::ExistingFile);
 
-    app.add_option("-o,--output", opt.output, "Output result (file path)")
+    // -o/--output：最终输出对齐结果（FASTA）。
+    // 说明：
+    // - 输出路径不要求预先存在；父目录建议存在（若不存在，后续写出阶段可能失败）。
+    // - 输出内容为多序列对齐后的 FASTA。
+    // 示例：-o out/aligned.fasta
+    app.add_option("-o,--output", opt.output,
+                   "Output aligned sequences (FASTA file path).")
         ->required();
 
     // workdir：改为可选。
     // 若用户不提供 -w，则在 main() 解析完成后用 makeDefaultWorkdir() 生成默认值。
     // 这样做的原因：CLI11 的 default_val 会直接在 -h 中展示默认值；但这里默认值带随机数，
     // 展示出来会让帮助信息“每次不同”，也会误导用户认为必须指定固定路径。
-    app.add_option("-w,--workdir", opt.workdir, "Working directory (default: ./tmp-<random>)");
+    // -w/--workdir：工作目录（存放中间文件/日志/临时结果）。
+    // 说明：
+    // - 若不提供，程序会自动生成 ./tmp-<随机数>；
+    // - 目录下会创建 data/raw_data、data/clean_data、temp、result 等子目录；
+    // - Release 模式下要求 workdir 为空目录（避免覆盖旧结果）；Debug 模式允许复用（便于迭代）。
+    app.add_option("-w,--workdir", opt.workdir,
+                   "Working directory for intermediate files (default: ./tmp-<random>). ")
+        ->capture_default_str();
 
     // 可选参数（增加长参数形式）
-    app.add_option("-c,--center-path", opt.center_path, "Center sequence path")
+    // -c/--center-path：指定中心/参考序列（FASTA）。
+    // 说明：
+    // - 不提供时：程序会在预处理阶段自动选择并生成共识/中心序列；
+    // - 提供时：会使用该序列作为参考（并在 workdir 中进行统一管理）。
+    // 典型用途：COVID 数据集里可以用 covid-ref 的第一条（武汉参考）作为 center。
+    app.add_option("-c,--center-path", opt.center_path,
+                   "Center/reference sequence in FASTA (optional). If not set, a consensus/center is generated.")
         ->check(CLI::ExistingFile);
 
     // 如果 -p 是“可执行文件路径”，ExistingFile 通常也能用；
@@ -241,39 +266,71 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 关键字：minipoa / mafft / clustalo
     // - 自定义模板：例如 "mafft --thread {thread} --auto {input} > {output}"
     // 注意：这里不能使用 ExistingFile 校验，否则关键字/命令名会被错误拒绝。
+    // -p/--msa-cmd：高质量 MSA 工具（用于对共识/插入序列进行高质量对齐）。
+    // 支持两种形式：
+    // 1) 关键字：minipoa / mafft / clustalo
+    //    - 输入关键字后，程序会自动展开为内置模板（见 MINIPOA_CMD/MAFFT_MSA_CMD/CLUSTALO_MSA_CMD）；
+    // 2) 自定义“命令模板字符串”：必须至少包含 {input} 和 {output}；可选包含 {thread}。
+    //    - 例如："mafft --thread {thread} --auto {input} > {output}"
+    // 注意：
+    // - 默认使用 minipoa（不传 -p 等价于 -p minipoa）；
+    // - 该命令会在参数校验阶段用一个 tiny.fasta 做一次 smoke test，若环境缺少该工具会直接报错。
     app.add_option("-p,--msa-cmd", opt.msa_cmd,
-                   "MSA command template or keyword {minipoa|mafft|clustalo}");
+                   "High-quality MSA method: keyword {minipoa|mafft|clustalo} or a custom command template containing {input} and {output} (optional {thread}).");
 
-    app.add_option("-t,--thread", opt.threads, "Number of threads")
+    // -t/--thread：线程数。
+    // 说明：
+    // - 默认值为硬件并发数（std::thread::hardware_concurrency）；
+    // - 影响预处理、比对以及外部 MSA 命令中的 {thread} 替换。
+    app.add_option("-t,--thread", opt.threads, "Number of threads.")
         ->default_val(get_default_threads())
         ->check(CLI::Range(1, 100000));
 
-    app.add_option("--kmer-size", opt.kmer_size, "K-mer size")
+    // --kmer-size：k-mer 大小。
+    // 说明：
+    // - 用于 minimizer/哈希相关流程的参数；一般无需改动。
+    // - 合法范围 [4,31]（与部分位运算/编码实现约束一致）。
+    app.add_option("--kmer-size", opt.kmer_size, "K-mer size used in sketch/minimizer.")
         ->default_val(15)
         ->check(CLI::Range(4, 31));
 
-    app.add_option("--kmer-window", opt.kmer_window, "Minimizer window size (w, in number of k-mers)")
+    // --kmer-window：minimizer 窗口大小 w（单位：k-mer 数）。
+    // 说明：w 越大，minimizer 更稀疏；w 越小，种子更密集但可能更慢。
+    app.add_option("--kmer-window", opt.kmer_window,
+                   "Minimizer window size w (in number of k-mers).")
         ->default_val(10)
         ->check(CLI::Range(1, 1000000));
 
-    app.add_option("--cons-n", opt.cons_n, "Number of sequences for consensus")
+    // --cons-n：用于生成共识/中心序列的 Top-N（按长度挑选）。
+    // 说明：
+    // - 输入序列数 <= cons_n 时，程序会直接调用外部 MSA 对全部序列做一次对齐（快速路径）；
+    // - 输入序列数远大于 cons_n 时，先用 Top-N 生成共识，再进行分批/参考比对。
+    app.add_option("--cons-n", opt.cons_n,
+                   "Number of sequences used to build the consensus/center (Top-N by length).")
         ->default_val(1000)
         ->check(CLI::Range(1, 1000000));
 
-    // 新增 sketch-size 参数
-    app.add_option("--sketch-size", opt.sketch_size, "Sketch size")
+    // --sketch-size：sketch（minhash）大小。
+    // 说明：越大越稳健但更慢/更占内存；一般默认 2000 足够。
+    app.add_option("--sketch-size", opt.sketch_size, "Sketch size (minhash count).")
         ->default_val(2000)
         ->check(CLI::Range(1, 10000000));
 
     // keep length：拆分为两个互斥开关（更精确地表达需求）
+    // --keep-first-length：只保持“第一条/中心序列”的长度坐标系。
+    // 直观理解：输出对齐结果中，中心序列长度不变；其他序列可能被截断/补齐以对齐到中心。
     app.add_flag("--keep-first-length", opt.keep_first_length,
-        "Keep only the first/center sequence length unchanged");
+        "Keep the first/center sequence length unchanged (others may be trimmed/padded to fit). ");
+    // --keep-all-length：保持所有中心序列长度坐标系。
+    // 适用于下游严格依赖每条中心序列原始坐标的场景，但可能更保守/更耗时。
     app.add_flag("--keep-all-length", opt.keep_all_length,
-        "Keep all center sequences length unchanged");
+        "Keep all center sequences lengths unchanged (more conservative). ");
 
     // workdir 管理：是否在完成后保留工作目录
+    // --save-workdir：保留工作目录（默认会删除）。
+    // 适用于调试/复现：可查看中间文件、外部 MSA 的输入输出、日志等。
     app.add_flag("--save-workdir", opt.save_workdir,
-        "Keep the working directory after alignment completion (default: remove)");
+        "Keep the working directory after completion (default: remove). Useful for debugging.");
 }
 
 // logParsedOptions：把解析后的参数以漂亮的表格形式输出到日志
