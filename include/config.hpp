@@ -30,6 +30,9 @@
 #include <filesystem>
 #include <sstream>
 #include <cinttypes>
+#include <random>
+#include <chrono>
+#include <iomanip>
 
 // ------------------------------------------------------------------
 // 通用配置常量
@@ -39,9 +42,11 @@
 #define LOGGER_FILE "halign4.log"         // 默认日志文件名（相对于工作目录）
 #define CONFIG_FILE "config.json"         // 默认配置文件路径（如果将来支持外部配置）
 
+const std::string MINIPOA_CMD = "minipoa {input} -S -t {thread} -r1 > {output}"; // Minipoa 多序列比对命令模板示例
+const std::string MAFFT_MSA_CMD = "mafft --thread {thread} --auto {input} > {output}"; // MAFFT 多序列比对命令模板示例
+const std::string CLUSTALO_MSA_CMD = "clustalo -i {input} -o {output} --threads {thread}"; // Clustal Omega 多序列比对命令模板示例
 
-const std::string DEFALT_MSA_CMD = "minipoa {input} -S -t {thread} -r1 > {output}"; // 默认多序列比对命令模板
-
+const std::string DEFAULT_MSA_CMD = MINIPOA_CMD; // 默认多序列比对命令模板
 // 工作目录体系
 const std::string WORKDIR_DATA = "data";         // 原始数据目录
 const std::string WORKDIR_TMP = "temp";         // 临时目录（短生命周期文件）
@@ -111,6 +116,32 @@ static int get_default_threads() {
     return static_cast<int>(hc ? hc : 1u);
 }
 
+// ------------------------------------------------------------------
+// 默认 workdir 生成器（关键逻辑新增，需中文注释）
+//
+// 需求：用户不传 -w/--workdir 时，自动使用 "./tmp-随机数"。
+// 设计点：
+// 1) 这里返回的是相对路径字符串（"./tmp-..."），保持与 CLI 输入一致；
+// 2) 使用“时间戳 + 随机数”拼接，降低并发/重复运行时的碰撞概率；
+// 3) 不在此处创建目录：目录的创建/清空策略仍由 checkOption()->file_io::prepareEmptydir 统一处理，
+//    以保证现有流程与错误处理逻辑不变。
+// ------------------------------------------------------------------
+static std::string makeDefaultWorkdir() {
+    using Clock = std::chrono::high_resolution_clock;
+    const auto now = Clock::now().time_since_epoch();
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+
+    // 使用 random_device 作为种子，生成少量随机扰动，进一步降低同一纳秒内启动时的冲突概率。
+    std::random_device rd;
+    std::mt19937_64 gen(static_cast<uint64_t>(rd()) ^ static_cast<uint64_t>(ns));
+    std::uniform_int_distribution<uint32_t> dist(0u, 0xFFFFFFFFu);
+    const uint32_t r = dist(gen);
+
+    std::ostringstream oss;
+    oss << "./tmp-" << ns << "-" << std::hex << std::setw(8) << std::setfill('0') << r;
+    return oss.str();
+}
+
 struct Options {
 	// 输入/输出与工作目录
 	std::string input;          // -i：输入序列文件（路径或压缩文件）
@@ -140,7 +171,6 @@ struct Options {
 };
 
 
-
 // setupCli：定义 CLI 参数并绑定到 Options
 // 注释说明：
 // - 使用 CLI11 库实现参数解析，支持短参数/长参数与基本校验（例如 ExistingFile）
@@ -160,8 +190,11 @@ static void setupCli(CLI::App& app, Options& opt) {
     app.add_option("-o,--output", opt.output, "Output result (file path)")
         ->required();
 
-    app.add_option("-w,--workdir", opt.workdir, "Working directory")
-        ->required();
+    // workdir：改为可选。
+    // 若用户不提供 -w，则在 main() 解析完成后用 makeDefaultWorkdir() 生成默认值。
+    // 这样做的原因：CLI11 的 default_val 会直接在 -h 中展示默认值；但这里默认值带随机数，
+    // 展示出来会让帮助信息“每次不同”，也会误导用户认为必须指定固定路径。
+    app.add_option("-w,--workdir", opt.workdir, "Working directory (default: ./tmp-<random>)");
 
     // 可选参数（增加长参数形式）
     app.add_option("-c,--center-path", opt.center_path, "Center sequence path")

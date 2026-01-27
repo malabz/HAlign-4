@@ -51,7 +51,7 @@ static void checkOption(Options& opt) {
 #endif
     file_io::prepareEmptydir(opt.workdir, must_be_empty);
 
-    std::string msa_cmd_str = DEFALT_MSA_CMD;
+    std::string msa_cmd_str = DEFAULT_MSA_CMD;
     if (!opt.msa_cmd.empty()) {
         file_io::requireRegularFile(opt.msa_cmd, "msa_cmd");
         msa_cmd_str = opt.msa_cmd;
@@ -113,6 +113,16 @@ int main(int argc, char** argv) {
 
         // CLI11 的解析必须在 main 中进行，以便直接处理 argc/argv
         CLI11_PARSE(app, argc, argv);
+
+        // 若用户未提供 -w/--workdir，则在此处生成默认工作目录。
+        // 这样做能保证：
+        // 1) CLI 帮助信息不会出现“每次不同的随机默认值”；
+        // 2) checkOption 中仍可统一调用 file_io::prepareEmptydir 创建/校验目录；
+        // 3) 程序后续所有路径拼接逻辑保持不变（只是 workdir 有了默认值）。
+        if (opt.workdir.empty()) {
+            opt.workdir = makeDefaultWorkdir();
+            spdlog::info("--workdir not provided, using default workdir: {}", opt.workdir);
+        }
 
         // 解析成功后，opt 已被填充
         logParsedOptions(opt);

@@ -9,7 +9,6 @@ source:
 
 build:
   number: 0
-  script: bash build.sh
 
 requirements:
   build:
@@ -27,13 +26,22 @@ requirements:
     - zlib
     - libcurl
     - llvm-openmp
+    - mafft
+    - minipoa
 
 test:
   commands:
     - halign4 -h
+    - mafft --version
+    - minipoa -h
 
 about:
   home: https://github.com/pinglu-zhang/HAlign-4
   license: MIT
   summary: "HAlign-4"
   description: "HAlign 4: A New Strategy for Rapidly Aligning Millions of Sequences"
+  channels:
+    - malab
+    - bioconda
+    - conda-forge
+    - defaults
