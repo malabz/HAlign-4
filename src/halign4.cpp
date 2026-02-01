@@ -76,14 +76,14 @@ static void checkOption(Options& opt) {
 static void cleanupWorkdir(const Options& opt) {
     if (!opt.save_workdir) {
         try {
-            spdlog::info("正在删除工作目录: {}", opt.workdir);
+            spdlog::info("Removing working directory: {}", opt.workdir);
             file_io::removeAll(FilePath(opt.workdir));
-            spdlog::info("工作目录删除成功");
+            spdlog::info("Working directory removed successfully");
         } catch (const std::exception& e) {
-            spdlog::warn("工作目录删除失败: {}", e.what());
+            spdlog::warn("Failed to remove working directory: {}", e.what());
         }
     } else {
-        spdlog::info("保留工作目录: {}", opt.workdir);
+        spdlog::info("Keeping working directory: {}", opt.workdir);
     }
 }
 
