@@ -614,12 +614,12 @@ namespace align {
         // ------------------------------------------------------------------
         if (ref_count == 0) {
             throw std::runtime_error(
-                "parseAlignedReferencesToCigar: 文件中只有参考/共识序列，没有后续序列: " +
+                "parseAlignedReferencesToCigar: input contains only the reference/consensus sequence; no subsequent sequences found: " +
                 aligned_fasta_path.string());
         }
 
 #ifdef _DEBUG
-        spdlog::info("parseAlignedReferencesToCigar: 成功解析 {} 个序列的 CIGAR（从 {} 中），ref_gap_pos_len={} ",
+        spdlog::info("parseAlignedReferencesToCigar: parsed {} sequence CIGARs (from {}), ref_gap_pos_len={}",
                     ref_count, aligned_fasta_path.string(), out_ref_gap_pos.size());
 #endif
     }
@@ -760,9 +760,9 @@ namespace align {
         parseAlignedReferencesToCigar(aligned_insertion_fasta, insertion_aligned_map, insertion_ref_gap_pos);
 
 #ifdef _DEBUG
-        spdlog::info("mergeAlignedResults: 成功解析 {} 个参考序列的对齐关系",
+        spdlog::info("mergeAlignedResults: parsed alignments for {} reference sequences",
                     ref_aligned_map.size());
-        spdlog::info("mergeAlignedResults: 成功解析 {} 个插入序列的对齐关系",
+        spdlog::info("mergeAlignedResults: parsed alignments for {} insertion sequences",
                     insertion_aligned_map.size());
 #endif
 
@@ -858,10 +858,10 @@ namespace align {
                 length_initialized = true;
             } else if (cons_rec.seq.size() != expected_length) {
                 throw std::runtime_error(
-                    "mergeAlignedResults: 序列长度不一致！序列 '" + cons_rec.id +
-                    "' 长度为 " + std::to_string(cons_rec.seq.size()) +
-                    "，期望长度为 " + std::to_string(expected_length) +
-                    " (第 " + std::to_string(seq_count + 1) + " 条序列)");
+                    "mergeAlignedResults: sequence length mismatch! sequence '" + cons_rec.id +
+                    "' has length " + std::to_string(cons_rec.seq.size()) +
+                    ", expected " + std::to_string(expected_length) +
+                    " (sequence #" + std::to_string(seq_count + 1) + ")");
             }
 
             // ------------------------------------------------------------------
@@ -877,7 +877,7 @@ namespace align {
         // ------------------------------------------------------------------
         // 数据来源：aligned_insertion_fasta
         // - 第一条：共识序列（已在阶段 4.1 处理，需跳过）
-        // - 后续：所有插入序列（已通过外部 MSA 工具对齐）
+        // - 后续：所有插入序列（已通过外部 MSA 对齐）
         //
         // 处理流程（对每条序列）：
         // 1. 跳过第一条序列（共识序列，避免重复）
@@ -922,10 +922,10 @@ namespace align {
                 length_initialized = true;
             } else if (insertion_rec.seq.size() != expected_length) {
                 throw std::runtime_error(
-                    "mergeAlignedResults: 序列长度不一致！序列 '" + insertion_rec.id +
-                    "' 长度为 " + std::to_string(insertion_rec.seq.size()) +
-                    "，期望长度为 " + std::to_string(expected_length) +
-                    " (第 " + std::to_string(seq_count + 1) + " 条序列)");
+                    "mergeAlignedResults: sequence length mismatch! sequence '" + insertion_rec.id +
+                    "' has length " + std::to_string(insertion_rec.seq.size()) +
+                    ", expected " + std::to_string(expected_length) +
+                    " (sequence #" + std::to_string(seq_count + 1) + ")");
             }
 
             // ------------------------------------------------------------------
@@ -1041,10 +1041,10 @@ namespace align {
                     length_initialized = true;
                 } else if (fasta_rec.seq.size() != expected_length) {
                     throw std::runtime_error(
-                        "mergeAlignedResults: 序列长度不一致！序列 '" + fasta_rec.id +
-                        "' 长度为 " + std::to_string(fasta_rec.seq.size()) +
-                        "，期望长度为 " + std::to_string(expected_length) +
-                        " (第 " + std::to_string(seq_count + 1) + " 条序列，来自 SAM: " + sam_rec.rname + ")");
+                        "mergeAlignedResults: sequence length mismatch! sequence '" + fasta_rec.id +
+                        "' has length " + std::to_string(fasta_rec.seq.size()) +
+                        ", expected " + std::to_string(expected_length) +
+                        " (sequence #" + std::to_string(seq_count + 1) + ", from SAM: " + sam_rec.rname + ")");
                 }
 
                 // ------------------------------------------------------------------
@@ -1069,7 +1069,7 @@ namespace align {
         // - 提供性能分析的基本数据（总序列数、MSA 长度）
         // ------------------------------------------------------------------
 #ifdef _DEBUG
-        spdlog::info("mergeAlignedResults: 成功写入 {} 条序列，所有序列长度一致 = {}",
+        spdlog::info("mergeAlignedResults: wrote {} sequences; all sequences have consistent length = {}",
                     seq_count, expected_length);
 #endif
 
