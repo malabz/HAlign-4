@@ -52,27 +52,28 @@ namespace align {
             ref_minimizers.push_back(std::move(minimizer));
         }
 
+        FilePath consensus_unaligned_file = ref_fasta_path;
+        FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
+        FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_FASTA;
+        FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_JSON;
+
+        const std::size_t batch_size = 4096;
+        alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, msa_cmd, threads);
+        std::string consensus_string = consensus::generateConsensusSequence(
+            consensus_aligned_file,
+            consensus_file,
+            consensus_json_file,
+            0, // 不限制数量
+            threads,
+            batch_size
+        );
+
         if (keep_first_length)
         {
             consensus_seq = ref_sequences.front();
         }
         else
         {
-            FilePath consensus_unaligned_file = ref_fasta_path;
-            FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
-            FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_FASTA;
-            FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_JSON;
-
-            const std::size_t batch_size = 4096;
-            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, msa_cmd, threads);
-            std::string consensus_string = consensus::generateConsensusSequence(
-                consensus_aligned_file,
-                consensus_file,
-                consensus_json_file,
-                0, // 不限制数量
-                threads,
-                batch_size
-            );
             consensus_seq.id = "consensus";
             consensus_seq.seq = std::move(consensus_string);
         }

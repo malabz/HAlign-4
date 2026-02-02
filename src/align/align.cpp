@@ -206,12 +206,12 @@ namespace align
         // 本函数只覆盖我们关心的部分，保持行为稳定。
         wavefront_aligner_attr_t attributes = wavefront_aligner_attr_default;
         attributes.distance_metric = gap_affine;
-        attributes.affine_penalties.mismatch = 2;      // X > 0
-        attributes.affine_penalties.gap_opening = 3;   // O >= 0
+        attributes.affine_penalties.mismatch = 3;      // X > 0
+        attributes.affine_penalties.gap_opening = 4;   // O >= 0
         attributes.affine_penalties.gap_extension = 1; // E > 0
 
         // memory_mode：ultralow 表示尽量降低内存占用，适合长序列但可能更慢
-        attributes.memory_mode = wavefront_memory_ultralow;
+        attributes.memory_mode = wavefront_memory_high;
 
         // heuristic：自适应 band 策略，限制波前带宽以加速
         // 注意：heuristic 的启发式会影响速度与最优性，本项目当前选择偏速度。
