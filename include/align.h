@@ -51,7 +51,6 @@
 // ==================================================================
 namespace cigar
 {
-
     // ------------------------------------------------------------------
     // CIGAR 表示与转换
     // ------------------------------------------------------------------
@@ -239,8 +238,54 @@ namespace cigar
     // cigar = "10M5I20M3D" -> 返回 35（10+5+20）
     // ------------------------------------------------------------------
     std::size_t getQueryLength(const Cigar_t& cigar);
-}
 
+    // ------------------------------------------------------------------
+    // 函数：delQueryToRefByCigar
+    // 功能：根据 CIGAR 操作从 query 序列中删除 I（insertion）对应的碱基
+    //
+    // **用途：将 query 序列转换为与 ref 相同坐标系的序列（去除插入）**
+    // - padQueryToRefByCigar 是在 query 中插入 gap（针对 D 操作）
+    // - delQueryToRefByCigar 是从 query 中删除碱基（针对 I 操作）
+    // - 两者都是将 query 投影到 ref 坐标系，但方式不同
+    //
+    // 参数：
+    //   - query: 待处理的查询序列（会被原地修改）
+    //   - cigar: CIGAR 操作序列（压缩形式）
+    //
+    // CIGAR 操作语义：
+    //   - M/=/X (match/mismatch): query 和 ref 都消耗，保留字符
+    //   - I (insertion): query 相对 ref 的插入，**删除这些字符**
+    //   - D (deletion): query 相对 ref 的缺失，不影响 query（ref 有但 query 没有）
+    //   - S (soft clip): query 中存在但未比对的部分，保留字符
+    //   - H (hard clip): 已从 query 中移除，不处理
+    //   - N (skip): 类似 D，不影响 query
+    //
+    // 算法说明：
+    //   1. 预计算删除 I 操作后的结果长度
+    //   2. 从后往前构建结果序列，跳过 I 操作对应的位置
+    //   3. 只保留非 I 操作消耗的字符
+    //
+    // 性能：
+    //   - 时间复杂度：O(M + N)，M 为 CIGAR 操作数，N 为 query 长度
+    //   - 空间复杂度：O(N)，需要临时存储原始 query
+    //
+    // 示例1：
+    //   query = "ACGTACGT", cigar = "4M2I2M"
+    //   说明：4M 保留 "ACGT"，2I 删除 "AC"，2M 保留 "GT"
+    //   结果: query = "ACGTGT"（长度 6 = 8 - 2）
+    //
+    // 示例2：
+    //   query = "AAATTTGGG", cigar = "3M3I3M"
+    //   说明：3M 保留 "AAA"，3I 删除 "TTT"，3M 保留 "GGG"
+    //   结果: query = "AAAGGG"（长度 6 = 9 - 3）
+    //
+    // 使用场景：
+    //   - 将比对后的 query 序列转换为与 ref 坐标系一致的形式（不含插入）
+    //   - 用于分析或可视化时需要去除插入的场景
+    //   - 与 padQueryToRefByCigar 配合使用，实现不同的投影方式
+    // ------------------------------------------------------------------
+    void delQueryToRefByCigar(std::string& query, const Cigar_t& cigar);
+}
 // ==================================================================
 // align 命名空间：序列比对算法与参考序列比对器
 // ==================================================================
@@ -871,12 +916,15 @@ namespace align {
         //   - sam_paths: 输入 SAM 文件路径列表
         //   - fasta_path: 输出 FASTA 文件路径
         //   - line_width: FASTA 每行宽度（默认 80）
+        //   - write_gap: 是否根据 CIGAR 在序列中插入 gap（默认 false）
         // 返回：合并的总序列数（包括共识序列）
         // ------------------------------------------------------------------
         std::size_t mergeConsensusAndSamToFasta(
             const std::vector<FilePath>& sam_paths,
             const FilePath& fasta_path,
-            std::size_t line_width = 80) const;
+            bool write_gap = false,
+            std::size_t line_width = 80
+            ) const;
 
         // ------------------------------------------------------------------
         // 辅助函数：parseAlignedReferencesToCigar

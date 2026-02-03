@@ -315,6 +315,112 @@ namespace cigar
     }
 
     // ------------------------------------------------------------------
+    // delQueryToRefByCigar：按 CIGAR 从 query 中删除 I 操作对应的碱基
+    // ------------------------------------------------------------------
+    // 功能：与 padQueryToRefByCigar 互补，删除插入位置的字符而非插入 gap
+    //
+    // 目标：返回时 query 只包含非 I 操作的字符（即与 ref 对齐的部分）
+    //
+    // 关键策略：从后往前填充（reverse fill）
+    // - 遍历 CIGAR，跳过 I 操作对应的字符，保留其他操作的字符
+    // - M/D/N/S/=/X 操作：从原始 query 拷贝字符
+    // - I 操作：跳过这些字符（不拷贝到结果中）
+    //
+    // 正确性不变量：
+    // - 所有消耗 query 的操作总长度必须等于 old_query.size()
+    // - 结果长度 = 原长度 - 所有 I 操作的长度总和
+    // ------------------------------------------------------------------
+    void delQueryToRefByCigar(std::string& query, const Cigar_t& cigar)
+    {
+        if (cigar.empty()) {
+            return; // 空 CIGAR：不做任何调整
+        }
+
+        // 1) 统计结果长度和 query 消耗长度：
+        // - I 操作：消耗 query，但不保留（删除）
+        // - M/S/=/X 操作：消耗 query，且保留
+        // - D/N 操作：不消耗 query，但输出占位（这里不产生输出，只是占位）
+        // - 结果长度 = 消耗 query 的长度 - I 操作的长度
+        std::size_t out_len = 0;
+        std::size_t consume_query = 0;
+
+        for (const CigarUnit cu : cigar) {
+            char op_char;
+            uint32_t len = 0;
+            intToCigar(cu, op_char, len);
+
+            if (op_char == 'I') {
+                // I：消耗 query，但删除（不计入输出长度）
+                consume_query += len;
+            } else if (op_char == 'H' || op_char == 'P') {
+                // H/P：不消耗 query，也不产生输出
+                continue;
+            } else if (op_char == 'D' || op_char == 'N') {
+                // D/N：不消耗 query，也不产生输出（因为我们删除的是 query 中的字符）
+                continue;
+            } else {
+                // M/S/=/X：消耗 query，且保留到输出
+                out_len += len;
+                consume_query += len;
+            }
+        }
+
+        // 2) 防御式检查：CIGAR 消耗的 query 长度必须与实际一致
+        assert(consume_query == query.size());
+
+        // 3) 如果没有 I 操作，直接返回（避免不必要的拷贝）
+        if (out_len == query.size()) {
+            return;
+        }
+
+        // 4) 备份原 query，并分配输出空间
+        std::string old = std::move(query);
+        query.resize(out_len);
+
+        // 5) 从后往前填充
+        // w：写指针（指向 query 的当前位置）
+        // r：读指针（指向 old 的当前位置）
+        std::size_t w = out_len;
+        std::size_t r = old.size();
+
+        for (auto it = cigar.rbegin(); it != cigar.rend(); ++it) {
+            char op_char;
+            uint32_t len = 0;
+            intToCigar(*it, op_char, len);
+
+            if (op_char == 'I') {
+                // I：跳过这些字符（从 old 中读取但不写入结果）
+                for (uint32_t i = 0; i < len; ++i) {
+                    assert(r > 0);
+                    --r; // 只移动读指针，不写入
+                }
+                continue;
+            }
+
+            if (op_char == 'H' || op_char == 'P') {
+                // H/P：忽略
+                continue;
+            }
+
+            if (op_char == 'D' || op_char == 'N') {
+                // D/N：不消耗 query，不处理
+                continue;
+            }
+
+            // M/S/=/X：从 old 拷贝 len 个字符
+            for (uint32_t i = 0; i < len; ++i) {
+                assert(r > 0);
+                assert(w > 0);
+                query[--w] = old[--r];
+            }
+        }
+
+        // 6) Debug 保护：确保完全写满且完全消费 old
+        assert(w == 0);
+        assert(r == 0);
+    }
+
+    // ------------------------------------------------------------------
     // appendCigar：智能追加 CIGAR 并合并相邻同类型操作
     // ------------------------------------------------------------------
     // 设计目标：

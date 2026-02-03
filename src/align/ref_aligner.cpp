@@ -249,6 +249,7 @@ namespace align {
     // 3. 逐个读取 SAM 文件，提取序列并追加写入到同一个 writer
     // 4. 使用同一个 writer 实例，避免文件追加模式的复杂性和性能损失
     // 5. 所有写入操作在同一个 writer 的生命周期内完成
+    // 6. 如果 write_gap 为 true，根据 SAM 记录中的 CIGAR 字符串在序列中插入 gap
     //
     // 性能优化：
     // - 使用大缓冲区（默认 8MiB）批量写入，减少系统调用
@@ -258,7 +259,9 @@ namespace align {
     std::size_t RefAligner::mergeConsensusAndSamToFasta(
         const std::vector<FilePath>& sam_paths,
         const FilePath& fasta_path,
-        std::size_t line_width) const
+        bool write_gap,
+        std::size_t line_width
+        ) const
     {
         // 创建 FASTA writer（非追加模式，会覆盖已存在的文件）
         seq_io::SeqWriter writer(fasta_path, line_width);
@@ -287,6 +290,17 @@ namespace align {
             while (reader.next(sam_rec)) {
 
                 fasta_rec = seq_io::samRecordToSeqRecord(sam_rec, false);
+
+                // 如果 write_gap 为 true，根据 CIGAR 在序列中插入 gap
+                // 说明：
+                // - padQueryToRefByCigar 会根据 CIGAR 中的 D（deletion）操作在序列中插入 '-'
+                // - 这使得输出的序列与参考序列对齐
+                // - 如果 CIGAR 为空或不需要插入 gap，保持原序列不变
+                if (write_gap && !sam_rec.cigar.empty()) {
+                    // 解析 CIGAR 字符串为内部表示
+                    cigar::Cigar_t cigar_ops = cigar::stringToCigar(sam_rec.cigar);                   // 根据 CIGAR 在序列中插入 gap（原地修改）
+                    cigar::delQueryToRefByCigar(fasta_rec.seq, cigar_ops);
+                }
 
                 writer.writeFasta(fasta_rec);
                 ++file_count;
@@ -689,6 +703,7 @@ namespace align {
             // ------------------------------------------------------------------
             // 定义输出 FASTA 文件路径
             FilePath insertion_fasta_path = result_dir / ALL_INSERTION_FASTA;
+            bool write_gap = keep_first_length || keep_all_length;  // 标志：是否在插入序列中保留 gap（根据 CIGAR）
 
             // 调用辅助函数：将共识序列和所有 SAM 文件合并为一个 FASTA 文件
             // 说明：
@@ -700,7 +715,8 @@ namespace align {
             const std::size_t total_sequences = mergeConsensusAndSamToFasta(
                 insertion_sam_paths,
                 insertion_fasta_path,
-                80  // FASTA 行宽：每行 80 个字符（标准 FASTA 格式）
+                write_gap,  // 是否根据 CIGAR 插入/删除 gap
+                80          // FASTA 行宽：每行 80 个字符（标准 FASTA 格式）
             );
 
 #ifdef _DEBUG
@@ -715,7 +731,19 @@ namespace align {
             // 输入：ALL_INSERTION_FASTA（共识序列 + 插入序列）
             // 输出：ALIGNED_INSERTION_FASTA（对齐后的 MSA 结果，所有序列等长）
             // 说明：MSA 工具会将共识序列作为锚点，对齐所有插入序列
-            alignConsensusSequence(insertion_fasta_path, aligned_insertion_fasta, msa_cmd, threads);
+            if (!write_gap)
+            {
+                alignConsensusSequence(insertion_fasta_path, aligned_insertion_fasta, msa_cmd, threads);
+                spdlog::info("mergeAlignedResults: aligned insertion sequences using external MSA tool: {} -> {}",
+                             insertion_fasta_path.string(), aligned_insertion_fasta.string());
+            }else
+            {
+                // 把insertion_fasta_path复制一份改名为aligned_insertion_fasta
+                file_io::copyFile(insertion_fasta_path, aligned_insertion_fasta);
+                spdlog::info("mergeAlignedResults: skipped alignment for insertion sequences, copied {} to {}",
+                             insertion_fasta_path.string(), aligned_insertion_fasta.string());
+            }
+
         }
         else
         {
@@ -906,13 +934,13 @@ namespace align {
                 continue;
             }
 
-            // ------------------------------------------------------------------
-            // 步骤 4.2.2：移除插入 MSA 中共识序列的 gap 列（可选）
-            // ------------------------------------------------------------------
-            if (keep_first_length || keep_all_length)
-            {
-                removeRefGapColumns(insertion_rec.seq, insertion_ref_gap_pos);
-            }
+            // // ------------------------------------------------------------------
+            // // 步骤 4.2.2：移除插入 MSA 中共识序列的 gap 列（可选）
+            // // ------------------------------------------------------------------
+            // if (keep_first_length || keep_all_length)
+            // {
+            //     removeRefGapColumns(insertion_rec.seq, insertion_ref_gap_pos);
+            // }
 
             // ------------------------------------------------------------------
             // 步骤 4.2.3：序列长度一致性检测
