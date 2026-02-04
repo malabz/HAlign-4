@@ -511,7 +511,14 @@ namespace align {
         double indel_rate = 0.1,
         int    margin = 200)           // 多一点保险
     {
+        // 如果qlen和tlen差异很大，返回-1
+        if (std::abs(qlen - tlen) / std::max(qlen, tlen) > 0.5)
+        {
+            return -1;
+        }
+
         return margin + static_cast<int>(indel_rate * (qlen + tlen / 2));
+
     }
 
     // ==================================================================
