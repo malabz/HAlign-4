@@ -938,7 +938,7 @@ namespace align {
         std::size_t mergeConsensusAndSamToFasta(
             const std::vector<FilePath>& sam_paths,
             const FilePath& fasta_path,
-            bool write_gap = false,
+            bool keep = false,
             std::size_t line_width = 80
             ) const;
 

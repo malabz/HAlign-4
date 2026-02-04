@@ -315,20 +315,23 @@ namespace cigar
     }
 
     // ------------------------------------------------------------------
-    // delQueryToRefByCigar：按 CIGAR 从 query 中删除 I 操作对应的碱基
+    // delQueryToRefByCigar：按 CIGAR 调整 query，删除 I 操作碱基，为 D 操作添加 gap
     // ------------------------------------------------------------------
-    // 功能：与 padQueryToRefByCigar 互补，删除插入位置的字符而非插入 gap
+    // 功能：调整 query 使其与 ref 对齐
+    // - 删除 I（插入）操作对应的字符（这些是相对于 ref 的多余碱基）
+    // - 为 D（删除）操作添加对应长度的 gap '-'（这些是 ref 有但 query 缺失的位置）
     //
-    // 目标：返回时 query 只包含非 I 操作的字符（即与 ref 对齐的部分）
+    // 目标：返回时 query 与 ref 按 CIGAR 完全对齐
     //
     // 关键策略：从后往前填充（reverse fill）
-    // - 遍历 CIGAR，跳过 I 操作对应的字符，保留其他操作的字符
-    // - M/D/N/S/=/X 操作：从原始 query 拷贝字符
+    // - 遍历 CIGAR，跳过 I 操作对应的字符，为 D 操作插入 gap
+    // - M/S/=/X 操作：从原始 query 拷贝字符
     // - I 操作：跳过这些字符（不拷贝到结果中）
+    // - D/N 操作：不消耗 query，但在结果中插入 gap '-'
     //
     // 正确性不变量：
     // - 所有消耗 query 的操作总长度必须等于 old_query.size()
-    // - 结果长度 = 原长度 - 所有 I 操作的长度总和
+    // - 结果长度 = (消耗 query 的长度 - I 操作长度) + D/N 操作长度
     // ------------------------------------------------------------------
     void delQueryToRefByCigar(std::string& query, const Cigar_t& cigar)
     {
@@ -337,10 +340,10 @@ namespace cigar
         }
 
         // 1) 统计结果长度和 query 消耗长度：
-        // - I 操作：消耗 query，但不保留（删除）
-        // - M/S/=/X 操作：消耗 query，且保留
-        // - D/N 操作：不消耗 query，但输出占位（这里不产生输出，只是占位）
-        // - 结果长度 = 消耗 query 的长度 - I 操作的长度
+        // - I 操作：消耗 query，但删除（不计入输出长度）
+        // - M/S/=/X 操作：消耗 query，且保留到输出
+        // - D/N 操作：不消耗 query，但在输出中产生 gap '-'
+        // - 结果长度 = (消耗 query 的长度 - I 操作长度) + D/N 操作长度
         std::size_t out_len = 0;
         std::size_t consume_query = 0;
 
@@ -356,8 +359,8 @@ namespace cigar
                 // H/P：不消耗 query，也不产生输出
                 continue;
             } else if (op_char == 'D' || op_char == 'N') {
-                // D/N：不消耗 query，也不产生输出（因为我们删除的是 query 中的字符）
-                continue;
+                // D/N：不消耗 query，但在输出中产生 gap '-'
+                out_len += len;
             } else {
                 // M/S/=/X：消耗 query，且保留到输出
                 out_len += len;
@@ -368,14 +371,25 @@ namespace cigar
         // 2) 防御式检查：CIGAR 消耗的 query 长度必须与实际一致
         assert(consume_query == query.size());
 
-        // 3) 如果没有 I 操作，直接返回（避免不必要的拷贝）
+        // 3) 如果输出长度与原长度相同且没有 I/D/N 操作，直接返回
         if (out_len == query.size()) {
-            return;
+            // 快速检查是否真的没有 I/D/N 操作
+            bool has_indel = false;
+            for (const CigarUnit cu : cigar) {
+                char op_char;
+                uint32_t len = 0;
+                intToCigar(cu, op_char, len);
+                if (op_char == 'I' || op_char == 'D' || op_char == 'N') {
+                    has_indel = true;
+                    break;
+                }
+            }
+            if (!has_indel) return;
         }
 
         // 4) 备份原 query，并分配输出空间
         std::string old = std::move(query);
-        query.resize(out_len);
+        query.assign(out_len, '-'); // 预分配并初始化为 gap
 
         // 5) 从后往前填充
         // w：写指针（指向 query 的当前位置）
@@ -403,7 +417,10 @@ namespace cigar
             }
 
             if (op_char == 'D' || op_char == 'N') {
-                // D/N：不消耗 query，不处理
+                // D/N：在结果中插入 gap '-'（已经在 assign 时初始化为 '-'）
+                // 只需移动写指针，不需要写入（因为已经是 '-'）
+                assert(w >= len);
+                w -= len;
                 continue;
             }
 
