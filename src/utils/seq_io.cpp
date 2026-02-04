@@ -745,7 +745,7 @@ namespace seq_io
 
     bool SamReader::next(SamRecord& rec)
     {
-        if (!impl_ || !impl_->in_) {
+        if (!impl_) {
             throw std::runtime_error("SamReader is not initialized");
         }
 
