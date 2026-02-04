@@ -543,47 +543,20 @@ namespace align {
         chunk.reserve(batch_size);
 
         // -----------------------------------------------------------------
-        // 进度条（单行刷新，无需预先统计总数，且不使用原子/锁）
+        // 进度条（使用 ProgressBar 类，减少代码冗余）
         //
         // 设计说明（为什么这样做）：
         // 1) 你明确不希望预统计（需要二次遍历输入，超大数据集很慢）。
         // 2) 你也不希望用 atomic（并行区频繁原子加会带来额外开销）。
         //
         // 因此这里采用：
-        // - “读取线程”统计本次读入/累计已处理的序列数（read/processed）
+        // - "读取线程"统计本次读入/累计已处理的序列数（read/processed）
         // - 并行区只做计算，不做计数
         // - 每完成一个 chunk（即 chunk 内所有 read 都已处理），再在串行区更新 processed_count。
         //
         // 进度刷新策略：每处理 >=1000 条刷新一次，使用 '\r' 覆盖同一行。
         // -----------------------------------------------------------------
-        std::size_t processed_count = 0;   // 已完成比对并写出（以 chunk 为单位累加）
-        std::size_t next_report = 1000;   // 下次刷新阈值
-        const auto t0 = std::chrono::steady_clock::now();
-
-        auto print_progress = [&](bool force) {
-            if (!force && processed_count < next_report) {
-                return;
-            }
-
-            // 下一次阈值：按 1000 的倍数递增
-            if (processed_count >= next_report) {
-                next_report = ((processed_count / 1000) + 1) * 1000;
-            }
-
-            const auto now = std::chrono::steady_clock::now();
-            const double sec = std::chrono::duration_cast<std::chrono::duration<double>>(now - t0).count();
-            const double rate = (sec > 0.0) ? (static_cast<double>(processed_count) / sec) : 0.0;
-
-            // std::fprintf(stdout, "\r%s", fmt::format("[align] processed={}  elapsed={:.1f}s  rate={:.1f} seq/s",
-            //                                         processed_count, sec, rate).c_str());
-            // std::fflush(stdout);
-            // ANSI: cyan = \x1b[36m, reset = \x1b[0m
-            std::fprintf(stderr,
-                         "\r\033[32m[align] processed=%zu  elapsed=%.1fs  rate=%.1f seq/s\033[0m   ",
-                         processed_count, sec, rate);
-            std::fflush(stderr);
-
-        };
+        ProgressBar progress("align");
 
         while (true)
         {
@@ -667,14 +640,12 @@ namespace align {
             // 注意：必须在使用 chunk.size() 之后释放
             std::vector<seq_io::SeqRecord>().swap(chunk);
 
-            // chunk 处理完毕：累加已完成数量
-            processed_count += chunk_size;
-            print_progress(false);
+            // chunk 处理完毕：累加已完成数量（通过 ProgressBar 管理）
+            progress.tick(chunk_size);
         }
 
         // 结束：强制输出一次并换行
-        print_progress(true);
-        std::fprintf(stderr, "\n");
+        progress.done();
         spdlog::info("Alignment completed");
 
         // ========================================================================
@@ -822,34 +793,15 @@ namespace align {
     void RefAligner::mergeAlignedResults(const std::string& msa_cmd, std::size_t batch_size)
     {
         // ------------------------------------------------------------------
-        // 进度条（串行，低开销）：显示已写入 FINAL_ALIGNED_FASTA 的序列条数
+        // 进度条（使用 ProgressBar 类，减少代码冗余）
         // ------------------------------------------------------------------
         // 设计说明（性能/正确性）：
         // 1) mergeAlignedResults 全程是串行流程（大量 I/O + 逐条处理），进度条不需要 atomic。
-        // 2) 不预统计总数（避免额外扫描巨大的 SAM 文件）；只显示“已写入条数 + 速率”。
+        // 2) 不预统计总数（避免额外扫描巨大的 SAM 文件）；只显示"已写入条数 + 速率"。
         // 3) 刷新频率用阈值控制（默认每 1000 条刷新一次），避免 fprintf 过于频繁。
         // 4) 输出到 stderr，避免干扰主输出文件。
         // ------------------------------------------------------------------
-        std::size_t progress_written = 0;
-        std::size_t progress_next_report = 1000;
-        const auto progress_t0 = std::chrono::steady_clock::now();
-
-        auto progress_tick = [&](bool force) {
-            if (!force && progress_written < progress_next_report) {
-                return;
-            }
-            if (progress_written >= progress_next_report) {
-                progress_next_report = ((progress_written / 1000) + 1) * 1000;
-            }
-            const auto now = std::chrono::steady_clock::now();
-            const double sec = std::chrono::duration_cast<std::chrono::duration<double>>(now - progress_t0).count();
-            const double rate = (sec > 0.0) ? (static_cast<double>(progress_written) / sec) : 0.0;
-            std::fprintf(stderr,
-                         "\r\033[32m[merge] written=%zu  elapsed=%.1fs  rate=%.1f seq/s\033[0m   ",
-                         progress_written, sec, rate);
-            std::fflush(stderr);
-
-        };
+        ProgressBar progress("merge");
 
         // ------------------------------------------------------------------
         // 阶段 0：初始化与路径准备
@@ -1088,7 +1040,7 @@ namespace align {
             // ------------------------------------------------------------------
             final_writer.writeFasta(cons_rec);
             ++seq_count;
-            progress_written++; progress_tick(false);
+            progress.tick();
         }
         final_writer.flush();  // 强制刷新缓冲区，确保数据落盘
 
@@ -1153,7 +1105,7 @@ namespace align {
             // ------------------------------------------------------------------
             final_writer.writeFasta(insertion_rec);
             ++seq_count;
-            progress_written++; progress_tick(false);
+            progress.tick();
         }
         final_writer.flush();  // 强制刷新缓冲区
 
@@ -1307,16 +1259,14 @@ namespace align {
                     // 步骤 4.3.3.2：写入最终 MSA 文件
                     final_writer.writeFasta(fasta_rec);
                     ++seq_count;
-                    progress_written++;
-                    progress_tick(false);
+                    progress.tick();
                 }
             }
         }
         final_writer.flush();  // 强制刷新缓冲区，确保所有数据落盘
 
         // 结束：强制刷新一次进度条并换行，避免覆盖后续日志
-        progress_tick(true);
-        std::fprintf(stderr, "\n");
+        progress.done();
 
         // ------------------------------------------------------------------
         // 阶段 5：最终验证与统计输出

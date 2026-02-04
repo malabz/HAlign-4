@@ -113,7 +113,9 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     // 处理循环：读取 -> 清洗 -> 写出 -> 交给 TopK 选择器
     seq_io::SeqRecord rec;
     std::size_t total_records = 0;
-    const std::size_t log_interval = 1000;
+
+    // 使用 ProgressBar 类替代手动进度条实现，减少代码冗余
+    ProgressBar progress("preprocess");
 
     // 重要说明（性能与正确性）：
     // - 该循环为预处理的热路径，若输入很大（成千上万 / 几百万条序列），要关注 IO 与内存占用。
@@ -123,7 +125,6 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     //      避免逐字符写入带来的系统调用开销；这对写大文件非常重要；
     //    * TopKLongestSelector 应该实现为维护一个大小为 K 的最小堆，插入/替换成本为 O(log K)，适合 K 远小于记录总数的场景；
     // - 内存权衡：TopK 的实现会保留 K 条完整记录（占用内存 O(K * avg_len)），若 K 很大需注意内存使用。
-    const auto loop_start = std::chrono::steady_clock::now();
     while (reader->next(rec)) {
         ++total_records;
         // 对序列进行规范化清洗：例如把字母转为大写，非 AGCTU 替换为 N（具体实现由 seq_io::cleanSequence 提供）。
@@ -138,20 +139,10 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
         // 注意：selector.consider 应复制或接管必要的字段（例如 id/seq），以免后续 rec 被复用/覆盖导致数据错误。
         selector.consider(rec);
 
-        // 每 1000 条刷新一次进度条（单行，回到行首）
-        if ((total_records % log_interval) == 0) {
-            const auto now = std::chrono::steady_clock::now();
-            const double elapsed_s = std::chrono::duration_cast<std::chrono::duration<double>>(now - loop_start).count();
-            const double rate = (elapsed_s > 1e-6) ? (total_records / elapsed_s) : 0.0;
-
-            // \r 回到行首，\033[32m 绿色，\033[0m 重置颜色，末尾空格覆盖旧内容
-            std::fprintf(stderr,
-                         "\r\033[32m[preprocess] processed=%zu  elapsed=%.1fs  rate=%.0f seq/s\033[0m   ",
-                         total_records, elapsed_s, rate);
-            std::fflush(stderr);  // 立即刷新到终端
-        }
+        // 使用 ProgressBar::tick() 更新进度，内部自动判断是否需要刷新
+        progress.tick();
     }
-    std::fprintf(stderr, "\n");  // 换行，避免后续日志覆盖进度条
+    progress.done();  // 强制输出最终状态并换行
 
     // ---------- 将 TopK 结果写成共识输入文件 ----------
     // 说明：takeSortedDesc 返回按长度降序排序的记录列表（一般用于选取最长的 N 条序列作为共识计算输入）

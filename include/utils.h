@@ -481,5 +481,114 @@ namespace cmd
 
 } // namespace cmd
 
+
+// ================================================================
+// ProgressBar - 进度条工具类（单行刷新，无需预知总数）
+//
+// 设计目标：
+// 1) 统一项目中所有进度条的实现，避免代码冗余
+// 2) 支持不预先知道总数的场景（只显示已处理数 + 速率）
+// 3) 线程安全考虑：本类本身不加锁，适用于串行区调用
+//    若需在并行区使用，应由调用方保证串行访问（如 OpenMP 串行区）
+//
+// 使用示例：
+//   ProgressBar progress("align");
+//   for (...) {
+//       // ... 处理工作 ...
+//       progress.tick();  // 处理一条
+//   }
+//   progress.done();  // 强制输出并换行
+// ================================================================
+class ProgressBar {
+public:
+    // 构造函数
+    // - label: 进度条前缀标签（如 "preprocess"、"align"、"merge"）
+    // - report_interval: 每处理多少条刷新一次（默认 1000）
+    explicit ProgressBar(std::string label, std::size_t report_interval = 1000) noexcept
+        : label_(std::move(label))
+        , report_interval_(report_interval)
+        , count_(0)
+        , next_report_(report_interval)
+        , start_time_(std::chrono::steady_clock::now())
+    {}
+
+    // 禁用拷贝（避免意外复制导致的状态混乱）
+    ProgressBar(const ProgressBar&) = delete;
+    ProgressBar& operator=(const ProgressBar&) = delete;
+
+    // 允许移动
+    ProgressBar(ProgressBar&&) noexcept = default;
+    ProgressBar& operator=(ProgressBar&&) noexcept = default;
+
+    // tick：处理完一条记录后调用，内部自动判断是否需要刷新
+    void tick() noexcept {
+        ++count_;
+        if (count_ >= next_report_) {
+            print(false);
+            next_report_ = ((count_ / report_interval_) + 1) * report_interval_;
+        }
+    }
+
+    // tick：处理完多条记录后调用（批量更新，减少调用开销）
+    void tick(std::size_t n) noexcept {
+        count_ += n;
+        if (count_ >= next_report_) {
+            print(false);
+            next_report_ = ((count_ / report_interval_) + 1) * report_interval_;
+        }
+    }
+
+    // done：强制输出最终状态并换行（通常在循环结束后调用）
+    void done() noexcept {
+        print(true);
+        std::fprintf(stderr, "\n");
+    }
+
+    // 获取当前已处理的数量
+    [[nodiscard]] std::size_t count() const noexcept { return count_; }
+
+    // 重置进度条（用于复用同一实例处理多个阶段）
+    void reset() noexcept {
+        count_ = 0;
+        next_report_ = report_interval_;
+        start_time_ = std::chrono::steady_clock::now();
+    }
+
+    // 重置进度条并更换标签
+    void reset(std::string new_label) noexcept {
+        label_ = std::move(new_label);
+        reset();
+    }
+
+private:
+    // print：输出进度信息到 stderr（使用 \r 回到行首覆盖）
+    // - force: 若为 true 则强制输出，否则仅在达到阈值时输出
+    void print(bool force) const noexcept {
+        if (!force && count_ < next_report_) {
+            return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed_sec = std::chrono::duration_cast<std::chrono::duration<double>>(
+            now - start_time_).count();
+        const double rate = (elapsed_sec > 1e-6)
+            ? (static_cast<double>(count_) / elapsed_sec)
+            : 0.0;
+
+        // ANSI 颜色码：绿色 = \033[32m，重置 = \033[0m
+        // 末尾空格用于覆盖可能残留的旧字符
+        std::fprintf(stderr,
+                     "\r\033[32m[%s] processed=%zu  elapsed=%.1fs  rate=%.0f seq/s\033[0m   ",
+                     label_.c_str(), count_, elapsed_sec, rate);
+        std::fflush(stderr);
+    }
+
+    std::string label_;                                  // 进度条前缀标签
+    std::size_t report_interval_;                        // 刷新间隔（每处理多少条刷新一次）
+    std::size_t count_;                                  // 已处理记录数
+    std::size_t next_report_;                            // 下次刷新阈值
+    std::chrono::steady_clock::time_point start_time_;   // 开始时间
+};
+
 #endif //HALIGN4_UTILS_H
 
