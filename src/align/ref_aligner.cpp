@@ -976,6 +976,11 @@ namespace align {
         parseAlignedReferencesToCigar(consensus_aligned_file, ref_aligned_map, ref_gap_pos);
         parseAlignedReferencesToCigar(aligned_insertion_fasta, insertion_aligned_map, insertion_ref_gap_pos);
 
+        if (keep_all_length)
+        {
+            ref_aligned_map[consensus_seq.id] = insertion_aligned_map[consensus_seq.id];
+        }
+
 #ifdef _DEBUG
         spdlog::info("mergeAlignedResults: parsed alignments for {} reference sequences",
                     ref_aligned_map.size());
