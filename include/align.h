@@ -512,7 +512,7 @@ namespace align {
         int    margin = 200)           // 多一点保险
     {
         // 如果qlen和tlen差异很大，返回-1
-        if (std::abs(qlen - tlen) / std::max(qlen, tlen) > 0.5)
+        if ((double)std::abs(qlen - tlen) / (double)std::max(qlen, tlen) > 0.5)
         {
             return -1;
         }
