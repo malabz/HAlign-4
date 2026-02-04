@@ -190,6 +190,7 @@ int main(int argc, char** argv) {
         }
         else if (opt.center_path.empty())
         {
+            // TODO 未来增加一个参数，用户直接传入比对好的文件
             alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd,  opt.threads);
             // 获得共识序列
             std::string consensus_string = consensus::generateConsensusSequence(
