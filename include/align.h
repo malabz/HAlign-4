@@ -779,7 +779,7 @@ namespace align {
         // 说明：
         // - threads <= 0 表示使用 OpenMP 运行时默认线程数（例如由 OMP_NUM_THREADS 控制）
         // - batch_size 用于控制"流式读取"的批次大小，越大吞吐越高但占用内存更多
-        void alignQueryToRef(const FilePath& qry_fasta_path, std::size_t batch_size = 5120);
+        void alignQueryToRef(const FilePath& qry_fasta_path, std::size_t batch_size = 51200);
 
         // ------------------------------------------------------------------
         // 方法：mergeAlignedResults - 合并所有比对结果生成最终 MSA
