@@ -142,26 +142,49 @@ TopKLongestSelector::TopKLongestSelector(std::size_t k)
     // - 如果 k_ == 0，直接返回（不保存任何记录）
     // - 如果堆未满，则直接 push 并上浮
     // - 否则比较候选与堆顶（最差）；若候选更好，则替换堆顶并下沉
+    //
+    // 性能优化（关键）：
+    // - 先检查长度和 order，再决定是否移动 SeqRecord
+    // - 避免对 99.99% 的不合格记录进行无效的字符串移动构造
+    // - 对于 100 万条记录，K=100 的场景，可减少 ~99.99 万次字符串移动
     void TopKLongestSelector::consider(seq_io::SeqRecord rec)
     {
         if (k_ == 0) return;
 
-        Item cand;
-        cand.len = rec.seq.size();
-        cand.order = order_counter_++;
-        cand.rec = std::move(rec);
+        const std::size_t cand_len = rec.seq.size();
+        const std::uint64_t cand_order = order_counter_++;
 
+        // 堆未满：直接接受
         if (heap_.size() < k_) {
-            heap_.push_back(std::move(cand));
+            Item item;
+            item.len = cand_len;
+            item.order = cand_order;
+            item.rec = std::move(rec);
+            heap_.push_back(std::move(item));
             siftUp(heap_.size() - 1);
             return;
         }
 
-        // heap_[0] 是当前“最差”的那条（堆顶）
-        if (betterThan(cand, heap_[0])) {
-            heap_[0] = std::move(cand);
+        // 堆已满：先用长度和 order 判断是否比堆顶更好
+        // 关键优化：避免无效的 SeqRecord 移动
+        const Item& worst = heap_[0];
+
+        // 快速判断：候选是否比堆顶更好
+        bool is_better;
+        if (cand_len != worst.len) {
+            is_better = (cand_len > worst.len);  // 更长则更好
+        } else {
+            is_better = (cand_order < worst.order);  // 同长度时，更早出现更好
+        }
+
+        // 只有确认更好时，才移动 SeqRecord 并替换堆顶
+        if (is_better) {
+            heap_[0].len = cand_len;
+            heap_[0].order = cand_order;
+            heap_[0].rec = std::move(rec);
             siftDown(0);
         }
+        // 否则：rec 被销毁，但避免了不必要的移动到 Item 再销毁的开销
     }
 
     // 将保留的堆内容按长度降序输出（同长度按出现顺序升序，保证稳定性）

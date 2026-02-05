@@ -474,6 +474,8 @@ namespace align {
         FilePath result_dir = work_dir / RESULTS_DIR;
         file_io::ensureDirectoryExists(result_dir, "result directory");
 
+        spdlog::info("Starting alignment with {} threads and batch size {}", nthreads, batch_size);
+
         // 每线程一个输出
         // writer（SAM 模式，占位输出也能保持格式合法）
         outs_path.clear();
@@ -810,6 +812,10 @@ namespace align {
                 insertion_sam_paths.push_back(path);
             }
 
+            spdlog::info(
+                "mergeAlignedResults: stage1 (insertion) - collected insertion SAM files: count={}, output_aligned_fasta='{}'",
+                insertion_sam_paths.size(), aligned_insertion_fasta.string());
+
             // ------------------------------------------------------------------
             // 子步骤 1.2：合并为单个 FASTA 文件（共识序列 + 插入序列）
             // ------------------------------------------------------------------
@@ -817,24 +823,20 @@ namespace align {
             FilePath insertion_fasta_path = result_dir / ALL_INSERTION_FASTA;
             bool keep = keep_first_length || keep_all_length;  // 标志：是否在插入序列中保留 gap（根据 CIGAR）
 
-            // 调用辅助函数：将共识序列和所有 SAM 文件合并为一个 FASTA 文件
-            // 说明：
-            // 1. 该函数会先写入共识序列（consensus_seq）作为 MSA 的参考（第一条序列）
-            // 2. 然后逐个读取 SAM 文件并提取序列追加写入
-            // 3. 使用同一个 SeqWriter 实例，避免追加模式的复杂性
-            // 4. 返回值为合并的总序列数（包括共识序列）
-            // 性能考虑：SeqWriter 内部使用缓冲，避免频繁系统调用
+            spdlog::info(
+                "mergeAlignedResults: stage1 (insertion) - merging consensus + insertion SAMs into FASTA: output='{}', keep_gaps_by_cigar={}, line_width=80",
+                insertion_fasta_path.string(), keep);
+
             const std::size_t total_sequences = mergeConsensusAndSamToFasta(
                 insertion_sam_paths,
                 insertion_fasta_path,
                 keep,  // 是否根据 CIGAR 插入/删除 gap
-                80          // FASTA 行宽：每行 80 个字符（标准 FASTA 格式）
+                80     // FASTA 行宽
             );
 
-#ifdef _DEBUG
-            spdlog::info("mergeAlignedResults: merged {} sequences (1 consensus + {} from SAM files) to {}",
-                        total_sequences, total_sequences - 1, insertion_fasta_path.string());
-#endif
+            spdlog::info(
+                "mergeAlignedResults: stage1 (insertion) - merged sequences into FASTA: total_sequences={} (including consensus), from_sam_sequences={} , output='{}'",
+                total_sequences, (total_sequences > 0 ? total_sequences - 1 : 0), insertion_fasta_path.string());
 
             // ------------------------------------------------------------------
             // 子步骤 1.3：调用外部 MSA 工具对齐插入序列
@@ -845,14 +847,18 @@ namespace align {
             // 说明：MSA 工具会将共识序列作为锚点，对齐所有插入序列
             if (!keep)
             {
+                spdlog::info(
+                    "mergeAlignedResults: stage1 (insertion) - aligning insertion FASTA using external MSA tool (cmd='{}')",
+                    msa_cmd);
                 alignConsensusSequence(insertion_fasta_path, aligned_insertion_fasta, msa_cmd, threads);
-                spdlog::info("mergeAlignedResults: aligned insertion sequences using external MSA tool: {} -> {}",
+                spdlog::info("mergeAlignedResults: stage1 (insertion) - alignment done: {} -> {}",
                              insertion_fasta_path.string(), aligned_insertion_fasta.string());
-            }else
+            }
+            else
             {
                 // 把insertion_fasta_path复制一份改名为aligned_insertion_fasta
                 file_io::copyFile(insertion_fasta_path, aligned_insertion_fasta);
-                spdlog::info("mergeAlignedResults: skipped alignment for insertion sequences, copied {} to {}",
+                spdlog::info("mergeAlignedResults: stage1 (insertion) - alignment skipped (keep=true), copied {} -> {}",
                              insertion_fasta_path.string(), aligned_insertion_fasta.string());
             }
 
@@ -890,7 +896,7 @@ namespace align {
         std::unordered_map<std::string, cigar::Cigar_t> insertion_aligned_map;
         std::vector<bool> ref_gap_pos;                 // 共识/参考（第一条）每列是否为gap
         std::vector<bool> insertion_ref_gap_pos;       // insertion MSA 中第一条序列每列是否为gap
-        FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
+        FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
 
         // 调用辅助函数：解析 MSA 对齐文件，生成每个序列与"对齐矩阵列"的 CIGAR
         // parseAlignedReferencesToCigar 逻辑：
@@ -898,6 +904,7 @@ namespace align {
         // 2. 对每条序列，将 gap 位置转换为 CIGAR（M=匹配/不匹配，D=删除）
         // 3. 记录第一条序列的 gap 位置到 ref_gap_pos/insertion_ref_gap_pos
         parseAlignedReferencesToCigar(consensus_aligned_file, ref_aligned_map, ref_gap_pos);
+
         parseAlignedReferencesToCigar(aligned_insertion_fasta, insertion_aligned_map, insertion_ref_gap_pos);
 
         if (keep_all_length)
@@ -905,20 +912,18 @@ namespace align {
             ref_aligned_map[consensus_seq.id] = insertion_aligned_map[consensus_seq.id];
         }
 
-#ifdef _DEBUG
-        spdlog::info("mergeAlignedResults: parsed alignments for {} reference sequences",
-                    ref_aligned_map.size());
-        spdlog::info("mergeAlignedResults: parsed alignments for {} insertion sequences",
-                    insertion_aligned_map.size());
-#endif
+        spdlog::info(
+            "mergeAlignedResults: stage2 (parse MSA) - parsed maps: ref_aligned_map_size={}, insertion_aligned_map_size={}, ref_gap_pos_len={}, insertion_ref_gap_pos_len={} ",
+            ref_aligned_map.size(), insertion_aligned_map.size(), ref_gap_pos.size(), insertion_ref_gap_pos.size());
 
         // ------------------------------------------------------------------
         // 阶段 3：初始化最终输出文件与序列长度检测机制
         // ------------------------------------------------------------------
         FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
-        seq_io::SeqWriter final_writer(final_output_path, U_MAX);  // U_MAX：禁用缓冲阈值，手动控制 flush
+        spdlog::info("mergeAlignedResults: stage3 (output) - writing final MSA FASTA: output='{}'",
+                     final_output_path.string());
+        seq_io::SeqWriter final_writer(final_output_path, U_MAX);
 
-        // 首先先把consensus_aligned_file写入最终文件
         // ------------------------------------------------------------------
         // 序列长度一致性检测机制
         // ------------------------------------------------------------------
@@ -940,6 +945,10 @@ namespace align {
         // ------------------------------------------------------------------
         // 阶段 4.1：处理共识序列及其参考序列（来自 consensus_aligned_file）
         // ------------------------------------------------------------------
+        spdlog::info(
+            "mergeAlignedResults: stage4.1 (consensus+refs) - start: input='{}', keep_first_length={}, keep_all_length={} ",
+            consensus_aligned_file.string(), keep_first_length, keep_all_length);
+
         // 数据来源：consensus_aligned_file
         // - 第一条：共识序列（consensus_seq）
         // - 后续：各个参考序列（已对齐到共识序列的 MSA 结果）
@@ -1002,6 +1011,9 @@ namespace align {
             if (!length_initialized) {
                 expected_length = cons_rec.seq.size();
                 length_initialized = true;
+                spdlog::info(
+                    "mergeAlignedResults: stage4 - initialized expected_length={} (from first written sequence id='{}')",
+                    expected_length, cons_rec.id);
             } else if (cons_rec.seq.size() != expected_length) {
                 throw std::runtime_error(
                     "mergeAlignedResults: sequence length mismatch! sequence '" + cons_rec.id +
@@ -1017,11 +1029,19 @@ namespace align {
             ++seq_count;
             progress.tick();
         }
-        final_writer.flush();  // 强制刷新缓冲区，确保数据落盘
+        final_writer.flush();
+
+        spdlog::info(
+            "mergeAlignedResults: stage4.1 (consensus+refs) - done: total_written_so_far={}, expected_length={} ",
+            seq_count, expected_length);
 
         // ------------------------------------------------------------------
         // 阶段 4.2：处理插入序列（来自 aligned_insertion_fasta）
         // ------------------------------------------------------------------
+        spdlog::info(
+            "mergeAlignedResults: stage4.2 (insertion) - start: input='{}', skip_first_consensus=true",
+            aligned_insertion_fasta.string());
+
         // 数据来源：aligned_insertion_fasta
         // - 第一条：共识序列（已在阶段 4.1 处理，需跳过）
         // - 后续：所有插入序列（已通过外部 MSA 对齐）
@@ -1082,7 +1102,11 @@ namespace align {
             ++seq_count;
             progress.tick();
         }
-        final_writer.flush();  // 强制刷新缓冲区
+        final_writer.flush();
+
+        spdlog::info(
+            "mergeAlignedResults: stage4.2 (insertion) - done: total_written_so_far={}, expected_length={} ",
+            seq_count, expected_length);
 
         // ------------------------------------------------------------------
         // 阶段 4.3：处理普通比对序列（来自各线程的 SAM 文件）- 批处理并行优化版
@@ -1108,30 +1132,37 @@ namespace align {
         // - 长序列（30kb）的多级投影并行化后，吞吐可提升 5-10x（取决于线程数）
         // - batch 内存复用 + shrink_to_fit 避免峰值内存累积
         // - 进度条统一在串行区更新，避免 atomic 开销
-        // ========================================================================
+        // ===================================================================
         // ------------------------------------------------------------------
 
         // 性能优化：预估最终序列长度，减少 string resize 次数
         // 说明：MSA 最终长度通常与参考序列长度相近（± 10%）
         const std::size_t estimated_final_length = expected_length > 0 ? expected_length : 30000;
-
         // 批处理参数：每批处理的 SAM 记录数量
         // 说明：sam_batch_size 设置为 threads 的倍数（8x-16x）以充分利用并行性
         //      同时避免单批次内存过大（每条 30kb 序列 × sam_batch_size）
         const std::size_t sam_batch_size = batch_size;
 
         // 预分配批处理缓冲区（避免 vector 频繁扩容）
+        // 重要：这两个 batch 是后续 stage4.3 的“共享数据结构”，必须在使用前定义。
         std::vector<seq_io::SamRecord> sam_batch;
         std::vector<seq_io::SeqRecord> fasta_batch;
         sam_batch.reserve(sam_batch_size);
         fasta_batch.resize(sam_batch_size);  // 预分配固定大小，避免并行区 resize
+
+        spdlog::info(
+            "mergeAlignedResults: stage4.3 (SAM reads) - start: sam_files={}, sam_batch_size={}, estimated_final_length={}, omp_threads={} ",
+            outs_path.size(), sam_batch_size, estimated_final_length, threads);
 
         // SAM 记录读取缓冲区（在所有批次间复用，避免重复构造/析构）
         seq_io::SamRecord sam_rec;
 
         for (const auto& sam_path : outs_path)
         {
+
             seq_io::SamReader sam_reader(sam_path);
+
+            std::size_t wrote_from_this_sam = 0;  // 仅用于日志统计（文件级别），不参与任何分支逻辑
 
             // 批处理循环：串行读取 → 并行转换 → 串行写入
             while (true)
@@ -1237,8 +1268,9 @@ namespace align {
                     progress.tick();
                 }
             }
+
         }
-        final_writer.flush();  // 强制刷新缓冲区，确保所有数据落盘
+        final_writer.flush();
 
         // 结束：强制刷新一次进度条并换行，避免覆盖后续日志
         progress.done();
@@ -1255,10 +1287,10 @@ namespace align {
         // - 帮助验证处理是否正确
         // - 提供性能分析的基本数据（总序列数、MSA 长度）
         // ------------------------------------------------------------------
-#ifdef _DEBUG
+
         spdlog::info("mergeAlignedResults: wrote {} sequences; all sequences have consistent length = {}",
                     seq_count, expected_length);
-#endif
+
 
         // ==================================================================
         // 函数结束
