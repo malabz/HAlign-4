@@ -257,7 +257,7 @@ namespace align {
         // // 原逻辑：相似度稍高用 WFA2 分段，否则用 KSW2 分段
         cigar::Cigar_t result;
         if (similarity >= min_similarity) {
-            result = globalAlignMM2(ref, query, anchors, globalAlignWFA2);
+            result = globalAlignMM2(ref, query, anchors, globalAlignKSW2);
         } else {
             result = globalAlignMM2(ref, query, anchors, globalAlignKSW2);
         }
@@ -478,6 +478,7 @@ namespace align {
             &ref_minimizers[best_r],  // 使用对应参考序列的 minimizer
             &query_minimizer);
 
+
         // 4) 根据是否存在插入，决定写入哪个输出文件
         if (!cigar::hasInsertion(initial_cigar)) {
             // 无插入：直接写入普通文件
@@ -495,18 +496,29 @@ namespace align {
         // - consensus_sketch 和 consensus_minimizer 在构造函数中已计算并缓存
         // - 避免每次调用都重复计算 sketchFromSequence 和 extractMinimizer
         // - 对于大规模比对（10000+ queries），可节省数十秒到数分钟
+        cigar::Cigar_t recheck_cigar;
 
-        const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
+        if (best_ref.id == consensus_seq.id) {
+            // 如果最相似的参考就是共识序列，说明 query 已经与共识序列比对过了，无需重复比对
+            // 直接使用初始比对结果（虽然可能有插入，但我们认为这是最终结果）
+            recheck_cigar = initial_cigar;
+        }else
+        {
+            const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
 
-        cigar::Cigar_t recheck_cigar = globalAlign(
-            consensus_seq.seq,
-            q.seq,
-            consensus_similarity,
-            &consensus_minimizer,  // 使用预计算的共识序列 minimizer
-            &query_minimizer);
+            recheck_cigar = globalAlign(
+                consensus_seq.seq,
+                q.seq,
+                consensus_similarity,
+                &consensus_minimizer,  // 使用预计算的共识序列 minimizer
+                &query_minimizer);
+        }
+
 
         // 使用二次比对结果（如果失败则使用初始结果）
         const cigar::Cigar_t& final_cigar = recheck_cigar.empty() ? initial_cigar : recheck_cigar;
+
+
 
         // 根据二次比对结果决定输出文件
         if (cigar::hasInsertion(final_cigar)) {
