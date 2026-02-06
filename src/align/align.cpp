@@ -1,6 +1,6 @@
 #include "align.h"
 #include "ksw2.h"
-#include "bindings/cpp/WFAligner.hpp"
+// #include "bindings/cpp/WFAligner.hpp"  // 未使用：当前实现直接使用 C API（wavefront_align/cigar_get_CIGAR）
 extern "C" {
 #include "alignment/cigar.h"
 #include "wavefront/wavefront_align.h"
@@ -13,17 +13,6 @@ extern "C" {
 // 1) 将不同底层比对库（KSW2、WFA2）的调用细节封装起来，对外统一返回 cigar::Cigar_t
 // 2) 统一使用项目内的 DNA 字符编码与替换矩阵（ScoreChar2Idx / dna5_simd_mat）
 // 3) 明确资源所有权（哪些需要 free/delete），避免内存泄漏
-//
-// 重要约定（正确性）：
-// - 所有接口都返回"query 相对于 ref"的 CIGAR（即描述 query 如何对齐到 ref）。
-// - CIGAR 的压缩编码与 BAM/SAM 规范一致：cigar_unit=(len<<4)|op。
-// - 本文件只做"调用封装"与"参数配置"，不改变算法本身的比对逻辑。
-//
-// 性能说明：
-// - KSW2：经典 DP（SIMD 加速），对中短序列稳定；对长序列可用 band 降低复杂度。
-// - WFA2：Wavefront，编辑距离小（高相似度）时非常快；相似度低时可能退化。
-// - 编码阶段会产生两个临时 vector（ref_enc/qry_enc），属于必要开销；
-//   若未来成为热点，可考虑复用缓冲（但会引入状态/线程安全复杂度，本次不改行为）。
 // ==================================================================
 
 namespace align
@@ -54,39 +43,32 @@ namespace align
 
     cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query, align::KSW2AlignConfig cfg)
     {
+        // 边界：任意一条序列为空时，直接返回纯 I / 纯 D 的 CIGAR（避免进入 KSW2）
         if (ref.size() == 0 || query.size() == 0) {
-            // 特殊情况：任一序列为空，返回全删/全插 CIGAR
-            cigar::Cigar_t cigar;
+            cigar::Cigar_t cigar; // 返回用的 CIGAR 容器
             if (ref.size() == 0 && query.size() > 0) {
-                // ref 为空，query 全部插入
-                cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(query.size())));
+                cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(query.size()))); // query 全插入
             } else if (query.size() == 0 && ref.size() > 0) {
-                // query 为空，ref 全部删除
-                cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(ref.size())));
+                cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(ref.size())));   // ref 全删除
             }
             return cigar;
         }
+
         /* ---------- 1. 编码序列 ---------- */
-        // 说明：KSW2 期望输入为整数编码序列。
-        // ScoreChar2Idx 的映射规则见 align.h：A/C/G/T -> 0..3，其它 -> 4(N)
-        std::vector<uint8_t> ref_enc(ref.size());
-        std::vector<uint8_t> qry_enc(query.size());
+        std::vector<uint8_t> ref_enc(ref.size());   // ref 的 DNA5 编码（A/C/G/T/N -> 0..4）
+        std::vector<uint8_t> qry_enc(query.size()); // query 的 DNA5 编码
 
         for (size_t i = 0; i < ref.size(); ++i)
-            ref_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(ref[i])];
+            ref_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(ref[i])]; // 字符->索引
         for (size_t i = 0; i < query.size(); ++i)
-            qry_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(query[i])];
+            qry_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(query[i])]; // 字符->索引
 
-        cfg.band_width = align::auto_band(ref.size(), query.size());
+        cfg.band_width = align::auto_band(ref.size(), query.size()); // 启发式带宽（-1 表示不限制）
+
         /* ---------- 3. 调用 KSW2 ---------- */
-        // ez：KSW2 输出结构体。
-        // 关键字段：
-        // - ez.cigar：uint32_t*，malloc 分配，需要调用者 free
-        // - ez.n_cigar：CIGAR 操作数量
-        ksw_extz_t ez{};
+        ksw_extz_t ez{}; // KSW2 输出（含 ez.cigar/ez.n_cigar 等；ez.cigar 需要 free）
 
-        // 注意：ksw_extz2_sse 的第一个参数通常是 qlen/tlen 的额外参数（如 score-only 模式），
-        // 这里传 0 与现有逻辑保持一致。
+        // 调用 ksw_extz2_sse：输出写入 ez（注意参数顺序：先 query 再 ref，这是 ksw2 的接口约定）
         ksw_extz2_sse(0,
             static_cast<int>(qry_enc.size()), qry_enc.data(),
             static_cast<int>(ref_enc.size()), ref_enc.data(),
@@ -95,18 +77,14 @@ namespace align
             cfg.band_width, cfg.zdrop, cfg.end_bonus,
             cfg.flag, &ez);
 
-
         /* ---------- 4. 拷贝 / 释放 CIGAR ---------- */
-        // 输出转换：把 KSW2 的 uint32_t CIGAR 拷贝到项目统一的 cigar::Cigar_t
-        // 性能：reserve(ez.n_cigar) 避免 push_back 扩容
-        cigar::Cigar_t cigar;
-        cigar.reserve(ez.n_cigar);
+        cigar::Cigar_t cigar;          // 统一返回格式（压缩 uint32_t 操作序列）
+        cigar.reserve(ez.n_cigar);     // 预分配：避免 push_back 扩容
         for (int i = 0; i < ez.n_cigar; ++i)
-            cigar.push_back(ez.cigar[i]);
+            cigar.push_back(ez.cigar[i]);  // 拷贝 KSW2 的 CIGAR 单元（uint32_t）
 
-        // 资源释放：KSW2 用 malloc() 分配 ez.cigar -> 需要 free()
-        free(ez.cigar);
-        return cigar;
+        free(ez.cigar); // 释放：KSW2 内部用 malloc 分配
+        return cigar;   // 返回：query->ref 的 CIGAR
     }
 
     // ------------------------------------------------------------------
@@ -191,19 +169,16 @@ namespace align
         const std::string& query)
     {
         // 1) 构建 WFA2 属性（attributes）
-        // 注意：wavefront_aligner_attr_default 会填充大量默认值。
-        // 本函数只覆盖我们关心的部分，保持行为稳定。
-        wavefront_aligner_attr_t attributes = wavefront_aligner_attr_default;
-        attributes.distance_metric = gap_affine;
-        attributes.affine_penalties.mismatch = 3;      // X > 0
-        attributes.affine_penalties.gap_opening = 4;   // O >= 0
-        attributes.affine_penalties.gap_extension = 1; // E > 0
+        wavefront_aligner_attr_t attributes = wavefront_aligner_attr_default; // 从默认配置开始（减少遗漏）
+        attributes.distance_metric = gap_affine;                              // 选择仿射 gap 代价模型
+        attributes.affine_penalties.mismatch = 3;                             // mismatch 罚分（>0）
+        attributes.affine_penalties.gap_opening = 4;                          // gap open 罚分（>=0）
+        attributes.affine_penalties.gap_extension = 1;                        // gap extend 罚分（>0）
 
-        // memory_mode：ultralow 表示尽量降低内存占用，适合长序列但可能更慢
+        // memory_mode：当前实现实际选择 high（更快但更占内存）；注释需与赋值一致
         attributes.memory_mode = wavefront_memory_high;
 
-        // heuristic：自适应 band 策略，限制波前带宽以加速
-        // 注意：heuristic 的启发式会影响速度与最优性，本项目当前选择偏速度。
+        // heuristic：这里保留参数模板但默认不启用（启用会改变剪枝/速度/最优性权衡）
         // attributes.heuristic.strategy = wf_heuristic_banded_adaptive;
         // attributes.heuristic.min_k = -200;
         // attributes.heuristic.max_k = +200;
@@ -220,20 +195,18 @@ namespace align
         // cigar_get_CIGAR：将内部 cigar 转换为 BAM 风格的 uint32_t buffer
         // - cigar_buffer：由 WFA2 管理（通过 wf_aligner->cigar 释放），这里不手动 free
         // - cigar_length：操作数
-        uint32_t* cigar_buffer;
-        int cigar_length = 0;
+        uint32_t* cigar_buffer = nullptr; // 指向内部 buffer（不要 free）
+        int cigar_length = 0;             // cigar 操作数量
         cigar_get_CIGAR(wf_aligner->cigar, false, &cigar_buffer, &cigar_length);
 
-        // 5) 拷贝到项目统一格式
-        cigar::Cigar_t cigar;
-        cigar.reserve(static_cast<std::size_t>(cigar_length));
+        cigar::Cigar_t cigar; // 统一返回格式
+        cigar.reserve(static_cast<std::size_t>(cigar_length)); // 预分配
         for (int i = 0; i < cigar_length; ++i)
-            cigar.push_back(cigar_buffer[i]);
+            cigar.push_back(cigar_buffer[i]); // 拷贝每个 CIGAR 单元
 
-        // 6) 释放 aligner（会同时释放内部 cigar 结构）
-        wavefront_aligner_delete(wf_aligner);
+        wavefront_aligner_delete(wf_aligner); // 释放 aligner（同时释放内部 cigar 等资源）
 
-        return cigar;
+        return cigar; // 返回：query->ref 的 CIGAR
     }
 
     // ------------------------------------------------------------------
@@ -296,154 +269,116 @@ namespace align
     // - ref: 参考序列字符串（A/C/G/T/N），长度 ref_len
     // - query: 查询序列字符串，长度 qry_len
     // - anchors: 预先生成的锚点列表（anchor::Anchors），可以是任意顺序，函数内部会排序并链化
-cigar::Cigar_t globalAlignMM2(const std::string& ref,
+    // ------------------------------------------------------------------
+    cigar::Cigar_t globalAlignMM2(const std::string& ref,
                                   const std::string& query,
                                   const anchor::Anchors& anchors)
     {
-        // ------------------------------------------------------------------
-        // 保守实现：锚点分割 + 可选比对算法（保证 CIGAR 一定正确）
-        // ------------------------------------------------------------------
-        // 说明：
-        // 1) 使用 anchors 进行 chain，得到一条"最佳链"作为分段边界参考
-        // 2) 将 (ref,query) 拆成：左端 + (锚点间gap + 锚点span段)* + 右端
-        // 3) 每一段都用传入的 align_func（默认 globalAlignKSW2）做 end-to-end 全局比对
-        // 4) **关键正确性策略**：每段比对完后，不用我们"猜测"的长度推进位置，
-        //    而是用 cigar::getRefLength/getQueryLength 从 CIGAR 反推实际消耗长度。
-        //    这样可以避免之前因为 anchor 坐标不精确/重叠/空洞造成的长度错配。
-        //
-        // 性能：
-        // - 相比直接全局比对，此版本在锚点可靠时会分解成多个小矩阵，通常更快。
-        // - 但由于每一段都是真全局比对，可能比"extend+fallback"慢。
-        // - 通过 align_func 参数可以灵活选择 WFA2 或 KSW2，适应不同场景。
-        // - 目前优先保证正确性。
-        // ------------------------------------------------------------------
+        // 说明：本实现把“锚点链”当作分段边界参考，但推进位置严格由 CIGAR 消耗长度驱动（更稳健）。
 
-        // 如果未传入比对函数，默认使用 globalAlignKSW2
+        align::KSW2AlignConfig cfg;       // 普通段配置（默认 KSW2 配置）
+        align::KSW2AlignConfig first_cfg; // 左端段配置（可用于更保守/不同 flag）
+        first_cfg.flag = KSW_EZ_GENERIC_SC; // 显式启用完整替换矩阵（保持与其它路径一致）
 
-        align::KSW2AlignConfig cfg;
-        align::KSW2AlignConfig first_cfg;
-        first_cfg.flag = KSW_EZ_GENERIC_SC;
+        const std::size_t ref_len = ref.size(); // ref 总长度
+        const std::size_t qry_len = query.size(); // query 总长度
 
-
-        const std::size_t ref_len = ref.size();
-        const std::size_t qry_len = query.size();
-
-
-        // 1) 链化：拿到最佳链
-        anchor::Anchors sorted_anchors = anchors;
-        anchor::ChainParams chain_params = anchor::default_chain_params();
-        anchor::Anchors chain_anchors = anchor::chainAnchors(sorted_anchors, chain_params);
+        // 1) 链化 anchors：得到按得分选择的“最佳链”（可能为空）
+        anchor::Anchors sorted_anchors = anchors;                        // 拷贝：避免修改输入
+        anchor::ChainParams chain_params = anchor::default_chain_params(); // 默认链化参数
+        anchor::Anchors chain_anchors = anchor::chainAnchors(sorted_anchors, chain_params); // 链化
         if (chain_anchors.empty()) {
-            return globalAlignKSW2(ref, query);
+            return globalAlignKSW2(ref, query); // 无有效锚点：直接全局比对兜底
         }
 
-
-        // 2) 按 query 坐标从左到右处理（与 minimap2 的处理方式一致）
+        // 2) 统一按 query 坐标排序（保证从左到右分段处理）
         std::sort(chain_anchors.begin(), chain_anchors.end(),
                   [](const anchor::Anchor& a, const anchor::Anchor& b) {
                       if (a.pos_qry != b.pos_qry) return a.pos_qry < b.pos_qry;
                       return a.pos_ref < b.pos_ref;
                   });
 
-        cigar::Cigar_t result;
-        result.reserve(chain_anchors.size() * 2 + 2);
+        cigar::Cigar_t result;                     // 最终 CIGAR
+        result.reserve(chain_anchors.size() * 2 + 2); // 估算 reserve：span + gap 段数量
 
-        // 用 CIGAR 驱动推进的位置（不信任 anchor 坐标的绝对正确性）
-        std::size_t ref_pos = 0;
-        std::size_t qry_pos = 0;
+        std::size_t ref_pos = 0; // 当前已消费到的 ref 位置（由 CIGAR 推进）
+        std::size_t qry_pos = 0; // 当前已消费到的 query 位置（由 CIGAR 推进）
 
         auto append_segment = [&](std::size_t ref_start, std::size_t ref_end,
-                                  std::size_t qry_start, std::size_t qry_end, align::KSW2AlignConfig cfg) {
-            // 边界裁剪（即使 anchor 给错也不崩）
+                                  std::size_t qry_start, std::size_t qry_end, align::KSW2AlignConfig seg_cfg) {
+            // 边界裁剪：保证 substr 不越界（即使锚点坐标异常也不崩）
             ref_start = std::min(ref_start, ref_len);
             ref_end = std::min(ref_end, ref_len);
             qry_start = std::min(qry_start, qry_len);
             qry_end = std::min(qry_end, qry_len);
 
-            if (ref_end < ref_start) ref_end = ref_start;
+            if (ref_end < ref_start) ref_end = ref_start; // 纠正反向区间
             if (qry_end < qry_start) qry_end = qry_start;
 
-            const std::string seg_ref = ref.substr(ref_start, ref_end - ref_start);
-            const std::string seg_qry = query.substr(qry_start, qry_end - qry_start);
+            const std::string seg_ref = ref.substr(ref_start, ref_end - ref_start);   // ref 子串
+            const std::string seg_qry = query.substr(qry_start, qry_end - qry_start); // query 子串
 
+            cigar::Cigar_t seg_cigar = globalAlignKSW2(seg_ref, seg_qry, seg_cfg); // 本段 end-to-end 全局比对
 
-            cigar::Cigar_t seg_cigar;
-
-            seg_cigar = globalAlignKSW2(seg_ref, seg_qry, cfg);
-            // 严格校验本段 CIGAR 覆盖长度
+            // 用 CIGAR 反推消耗长度（关键）：不依赖锚点 span 的“理想长度”
             const std::size_t seg_ref_len = seg_ref.size();
             const std::size_t seg_qry_len = seg_qry.size();
-            const std::size_t c_ref = cigar::getRefLength(seg_cigar);
-            const std::size_t c_qry = cigar::getQueryLength(seg_cigar);
+            const std::size_t c_ref = cigar::getRefLength(seg_cigar);   // CIGAR 实际消耗的 ref 长度
+            const std::size_t c_qry = cigar::getQueryLength(seg_cigar); // CIGAR 实际消耗的 query 长度
 
             if (c_ref != seg_ref_len || c_qry != seg_qry_len) {
 #ifdef _DEBUG
-                spdlog::warn("globalAlignMM2(seg): segment cigar mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{}); forcing global fallback logic for this segment",
+                spdlog::warn("globalAlignMM2(seg): segment cigar mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{}); forcing robust fallback for this segment",
                              seg_ref_len, seg_qry_len, c_ref, c_qry);
 #endif
-
+                // 兜底策略：强制让 Query 先全部 I、Ref 再全部 D，保证一定回到对角线
                 cigar::Cigar_t forced_cigar;
-                // 策略：尽量先 match/mismatch 短的那边？不，直接粗暴处理最稳健。
-                // 先把 Query 消耗完（Insertion），再把 Reference 消耗完（Deletion）。
-                // 这样能保证一定会回到对角线。
                 if (seg_qry_len > 0) {
                     forced_cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry_len)));
                 }
                 if (seg_ref_len > 0) {
                     forced_cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref_len)));
                 }
-                cigar::appendCigar(result, forced_cigar);
+                cigar::appendCigar(result, forced_cigar); // 合并到总 CIGAR
 
-                // 既然强制补齐了，就按照预期的长度推进指针
-                ref_pos = ref_end;
+                ref_pos = ref_end; // 指针按“预期区间”推进（因为 forced 已覆盖全段）
                 qry_pos = qry_end;
                 return;
             }
 
-            cigar::appendCigar(result, seg_cigar);
+            cigar::appendCigar(result, seg_cigar); // 合并本段 CIGAR（会自动合并相邻同 op）
 
-            // 用 CIGAR 的消耗来推进（关键）：不信任 anchor 坐标，只信任 CIGAR 真实消耗
-            ref_pos = ref_start + c_ref;
+            ref_pos = ref_start + c_ref; // 指针按 CIGAR 消耗推进
             qry_pos = qry_start + c_qry;
         };
 
-        // ------------------------------------------------------------------
-        // 3) 左端：链起点之前的区域（ref_pos/qry_pos -> 第一个锚点起始位置）
-        // ------------------------------------------------------------------
+        // 3) 左端：序列起点到第一个锚点开始（可能为空段）
         {
             const auto& first = chain_anchors.front();
             append_segment(ref_pos, first.pos_ref, qry_pos, first.pos_qry, first_cfg);
         }
 
-        // ------------------------------------------------------------------
-        // 4) 依次处理每个锚点：先加 span，再加到下一个锚点的 gap
-        //    修正逻辑：确保每个 anchor.span 恰好被加入一次
-        // ------------------------------------------------------------------
+        // 4) 逐锚点：先处理锚点 span，再处理到下一个锚点的 gap
         for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
             const auto& a = chain_anchors[i];
 
-            // 4.1) 当前锚点的 span 段
-            const std::size_t a_ref_start = static_cast<std::size_t>(a.pos_ref);
-            const std::size_t a_qry_start = static_cast<std::size_t>(a.pos_qry);
-            const std::size_t a_ref_end = a_ref_start + static_cast<std::size_t>(a.span);
-            const std::size_t a_qry_end = a_qry_start + static_cast<std::size_t>(a.span);
+            const std::size_t a_ref_start = static_cast<std::size_t>(a.pos_ref);           // 锚点 ref 起点
+            const std::size_t a_qry_start = static_cast<std::size_t>(a.pos_qry);           // 锚点 qry 起点
+            const std::size_t a_ref_end = a_ref_start + static_cast<std::size_t>(a.span); // 锚点 ref 终点
+            const std::size_t a_qry_end = a_qry_start + static_cast<std::size_t>(a.span); // 锚点 qry 终点
 
-            append_segment(ref_pos, a_ref_end, qry_pos, a_qry_end,cfg);
+            append_segment(ref_pos, a_ref_end, qry_pos, a_qry_end, cfg); // span 段
 
-            // 4.2) 如果不是最后一个锚点，加上 gap（当前 anchor 结束 -> 下一个 anchor 开始）
             if (i + 1 < chain_anchors.size()) {
                 const auto& b = chain_anchors[i + 1];
-                append_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry, cfg);
+                append_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry, cfg); // gap 段
             }
         }
 
-        // ------------------------------------------------------------------
-        // 5) 右端：最后一个锚点结束到序列末尾
-        // ------------------------------------------------------------------
+        // 5) 右端：最后一个锚点之后到序列末尾
         append_segment(ref_pos, ref_len, qry_pos, qry_len, cfg);
 
-
-        // 6) 最终一致性检查：若不完整，退化为全局比对（保持历史行为）
+        // 6) 最终一致性检查：如不匹配则退化为全局比对（保证输出合法）
         const std::size_t total_ref = cigar::getRefLength(result);
         const std::size_t total_qry = cigar::getQueryLength(result);
         if (total_ref != ref_len || total_qry != qry_len) {
@@ -452,7 +387,7 @@ cigar::Cigar_t globalAlignMM2(const std::string& ref,
             return globalAlignKSW2(ref, query);
         }
 
-        return result;
+        return result; // 返回最终拼接后的 CIGAR
     }
 
 } // namespace align

@@ -5,7 +5,6 @@
 #include "seed.h"          // minimizer 提取和锚点生成
 #include <algorithm>
 #include <cstddef>
-#include <fstream>         // std::ifstream, std::ofstream
 #include <filesystem>      // std::filesystem::remove
 #include <memory>
 #include <stdexcept>
@@ -16,20 +15,21 @@
 #include <unordered_map>
 
 // 进度条：
-// - <chrono> 用于统计耗时
 // - <cstdio> 用于 fprintf(stderr, ...) 实现单行(\r)进度输出
-#include <chrono>
+// 注：<chrono> 在本文件中未直接使用（ProgressBar 内部若需要计时，应在其实现文件中包含）
+// #include <chrono>       // 未使用：移除以降低噪音（不影响逻辑）
 #include <cstdio>
 
 namespace align {
 
     // ------------------------------------------------------------------
     // 构造函数1：直接传入参数初始化
-    // 说明：
-    // 1. 如果 keep_first_length == true，使用 ref_sequences[0] 作为参考
-    // 2. 否则，调用 MSA 生成共识序列作为参考
-    // 3. threads 和 msa_cmd 参数用于共识序列生成
-    // 4. keep_first_length 和 keep_all_length 会被保存到成员变量
+    // 说明（与代码真实行为保持一致）：
+    // - 本构造函数会读取 ref_fasta_path 中的所有序列，逐条计算 MinHash sketch 与 minimizer（用于后续相似度与锚点生成）。
+    // - 随后会对 ref_fasta_path 内的序列做一次 MSA，并生成一条“共识序列”(consensus_string)。
+    // - keep_first_length=true 时：共识序列直接取第一条参考序列（ref_sequences.front()），忽略 consensus_string。
+    // - keep_first_length=false 时：使用生成的 consensus_string 作为共识序列内容。
+    // 注意：这里“是否生成/使用共识序列”的行为与 keep_first_length 强相关，注释必须避免写反。
     // ------------------------------------------------------------------
     RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size, int window_size,
                            int sketch_size, bool noncanonical, int threads, std::string msa_cmd,
@@ -40,46 +40,53 @@ namespace align {
           sketch_size(sketch_size),
           noncanonical(noncanonical),
           threads(threads),
-          msa_cmd(msa_cmd),          // 使用 move 语义避免拷贝
+          msa_cmd(msa_cmd),          // 这里是一次按值传参 + 成员拷贝/移动（由编译器决定 NRVO/移动），不是显式 std::move
           keep_first_length(keep_first_length),
           keep_all_length(keep_all_length)
     {
-        // 从文件读取参考序列并构建索引
+        // 从文件读取参考序列并构建索引（每条 ref 计算 sketch/minimizer，供后续相似度筛选与 anchors 生成）
         seq_io::KseqReader reader(ref_fasta_path);
         seq_io::SeqRecord rec;
         while (reader.next(rec))
         {
-            // 关键修复：必须在 move(rec) 之前计算 sketch 和 minimizer
+            // 关键点：必须在 move(rec) 之前计算 sketch/minimizer，因为 rec.seq 后续会被移动走
             auto sketch = mash::sketchFromSequence(rec.seq, kmer_size, sketch_size, noncanonical, random_seed);
             auto minimizer = minimizer::extractMinimizer(rec.seq, kmer_size, window_size, noncanonical);
 
+            // 保存参考序列本体
             ref_sequences.push_back(std::move(rec));
+            // 保存 sketch/minimizer（和 ref_sequences 同索引对应）
             ref_sketch.push_back(std::move(sketch));
             ref_minimizers.push_back(std::move(minimizer));
         }
 
-        FilePath consensus_unaligned_file = ref_fasta_path;
-        FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_ALIGNED;
-        FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_FASTA;
-        FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN/ CLEAN_CONS_JSON;
+        // MSA/共识生成所需的工作目录文件路径（沿用项目 workdir 约定）
+        FilePath consensus_unaligned_file = ref_fasta_path; // 输入：未对齐序列集合（这里直接用 ref_fasta_path）
+        FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED; // 输出：MSA 结果
+        FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_FASTA;           // 输出：共识 FASTA
+        FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_JSON;       // 输出：共识统计 JSON
 
-        const std::size_t batch_size = 4096;
+        const std::size_t batch_size = 4096; // 共识生成的批处理大小（影响 IO/内存，不影响结果）
+        // 外部 MSA：把未对齐序列集合对齐到 consensus_aligned_file
         alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, msa_cmd, threads);
+        // 从 MSA 结果生成一条共识序列字符串
         std::string consensus_string = consensus::generateConsensusSequence(
             consensus_aligned_file,
             consensus_file,
             consensus_json_file,
-            0, // 不限制数量
+            0, // 不限制数量（使用全部序列）
             threads,
             batch_size
         );
 
         if (keep_first_length)
         {
+            // keep_first_length：直接用第一条参考序列作为“共识/中心序列”（保持长度策略由下游逻辑决定）
             consensus_seq = ref_sequences.front();
         }
         else
         {
+            // 默认：使用生成的共识序列内容
             consensus_seq.id = "consensus";
             consensus_seq.seq = std::move(consensus_string);
         }
@@ -270,14 +277,17 @@ namespace align {
 
             while (reader.next(sam_rec)) {
 
+                // 将 SAM 记录转换为 FASTA 记录（不做额外清洗；第二个参数控制是否保留质量等元信息）
                 fasta_rec = seq_io::samRecordToSeqRecord(sam_rec, false);
 
-                // 如果 keep 为 true，根据 CIGAR 在序列中删除位点
-
+                // keep=true 的真实含义（与代码一致）：
+                // - 这里并不是“插入 gap”，而是把 query 中“相对参考的插入”删除掉，使 query 投影到参考坐标（长度更接近参考）。
+                // - 具体行为由 delQueryToRefByCigar 决定：它会按 CIGAR 删除 query 中对应 I 的碱基。
+                // 这样做用于后续 MSA/合并阶段的长度/坐标统一。
                 if (keep && !sam_rec.cigar.empty()) {
                     // 解析 CIGAR 字符串为内部表示
 #ifdef _DEBUG
-                    // 判断cigar是否能够成功比对两个序列
+                    // Debug：检查 cigar 长度是否与 ref/query 一致（便于定位上游写 SAM 的问题）
                     cigar::Cigar_t debug_cigar_ops = cigar::stringToCigar(sam_rec.cigar);
                     std::size_t debug_ref_len = cigar::getRefLength(debug_cigar_ops);
                     std::size_t debug_qry_len = cigar::getQueryLength(debug_cigar_ops);
@@ -290,11 +300,12 @@ namespace align {
                                      debug_qry_len);
                     }
 #endif
-                    cigar::Cigar_t cigar_ops = cigar::stringToCigar(sam_rec.cigar);                   // 根据 CIGAR 在序列中插入 gap（原地修改）
-                    cigar::delQueryToRefByCigar(fasta_rec.seq, cigar_ops);
+                    cigar::Cigar_t cigar_ops = cigar::stringToCigar(sam_rec.cigar); // 解析 CIGAR（后续按其删除 query 插入）
+                    cigar::delQueryToRefByCigar(fasta_rec.seq, cigar_ops);         // 将 query 删除投影到 ref 坐标（原地修改）
 #ifdef _DEBUG
+                    // Debug：投影后长度应与共识序列长度一致（若 ref_name 是共识）
                     if (fasta_rec.seq.size() != consensus_seq.seq.size()) {
-                       spdlog::debug("mergeConsensusAndSamToFasta: gap insertion size mismatch for record {}: expected {}, got {}",
+                       spdlog::debug("mergeConsensusAndSamToFasta: projected size mismatch for record {}: expected {}, got {}",
                                     fasta_rec.id,
                                     consensus_seq.seq.size(),
                                     fasta_rec.seq.size());
@@ -302,9 +313,10 @@ namespace align {
 #endif
                 }
 
+                // 写出 FASTA（writer 内部有缓冲；此处每条写一次，最终 flush 统一落盘）
                 writer.writeFasta(fasta_rec);
-                ++file_count;
-                ++total_count;
+                ++file_count;   // 当前 SAM 文件内计数
+                ++total_count;  // 全部文件累计计数
             }
 
             // 调试信息：记录每个文件的处理进度
@@ -684,18 +696,18 @@ namespace align {
         // ------------------------------------------------------------------
         // 步骤2：流式读取后续序列，生成每条序列的 CIGAR（碱基->M，gap->D）
         // ------------------------------------------------------------------
-        std::size_t ref_count = 0;
+        std::size_t parsed_seq_count = 0;
 
         while (reader.next(rec)) {
-            if (ref_count == 0)
+            if (parsed_seq_count == 0)
             {
-                // ref_gap_pos[i] == true  表示参考序列该列是 '-'
-                // ref_gap_pos[i] == false 表示参考序列该列是碱基
+                // 第一条序列：作为“参考/共识”用于记录 gap 列位置（ref_gap_pos）
                 out_ref_gap_pos.reserve(rec.seq.size());
                 for (const char base : rec.seq) {
                     out_ref_gap_pos.push_back(base == '-');
                 }
             }
+            // 为当前序列生成 CIGAR（M=该列为碱基；D=该列为 gap）
             cigar::Cigar_t cigar;
             cigar.reserve(20);  // 经验值：对齐后通常是少量游程段，预留可减少扩容
 
@@ -703,7 +715,6 @@ namespace align {
             std::uint32_t current_len = 0;
 
             // 逐列扫描：碱基记为 M，gap 记为 D。
-            // 注意：这里保持原逻辑：不依赖参考序列列信息做一致性校验。
             for (const char base : rec.seq) {
                 const char op = (base == '-') ? 'D' : 'M';
                 if (op == current_op) {
@@ -717,27 +728,28 @@ namespace align {
                 }
             }
 
+            // 收尾：把最后一段游程写入 CIGAR
             if (current_op != '\0' && current_len > 0) {
                 cigar.push_back(cigar::cigarToInt(current_op, current_len));
             }
 
+            // 注意：这里也会把第一条（参考/共识）存入 map；调用方若不需要可自行忽略/覆盖。
             out_ref_aligned_map[rec.id] = std::move(cigar);
-            ++ref_count;
+            ++parsed_seq_count; // 计数：包含第一条参考/共识在内的总序列数
 
         }
 
-        // ------------------------------------------------------------------
-        // 步骤3：至少要有一条“后续序列”，否则认为输入不符合预期
-        // ------------------------------------------------------------------
-        if (ref_count == 0) {
+        // 至少要读到 1 条序列（第一条参考/共识）；否则输入文件为空/非法
+        if (parsed_seq_count == 0) {
             throw std::runtime_error(
-                "parseAlignedReferencesToCigar: input contains only the reference/consensus sequence; no subsequent sequences found: " +
-                aligned_fasta_path.string());
+                "parseAlignedReferencesToCigar: empty input FASTA: " + aligned_fasta_path.string());
         }
 
 #ifdef _DEBUG
-        spdlog::info("parseAlignedReferencesToCigar: parsed {} sequence CIGARs (from {}), ref_gap_pos_len={}",
-                    ref_count, aligned_fasta_path.string(), out_ref_gap_pos.size());
+        // Debug：打印解析到的序列数与参考 gap 列数组长度
+        // 注意：parsed_seq_count 包含第一条“参考/共识”序列在内。
+        spdlog::info("parseAlignedReferencesToCigar: parsed {} sequences (including reference) from {} , ref_gap_pos_len={}",
+                    parsed_seq_count, aligned_fasta_path.string(), out_ref_gap_pos.size());
 #endif
     }
 
@@ -1218,6 +1230,8 @@ namespace align {
                     // 性能优化：并行区内每个线程独立查找 map（read-only，无竞争）
                     auto it = ref_aligned_map.find(sam_rec_i.rname);
                     if (it == ref_aligned_map.end()) {
+                        // 注意：在 OpenMP 并行区里直接 throw 可能导致实现相关的终止行为。
+                        // 这里维持现有逻辑（抛异常终止），但用 critical 包住以避免多线程同时构造异常信息造成日志混乱。
                         #pragma omp critical
                         {
                             throw std::runtime_error(
@@ -1310,7 +1324,7 @@ namespace align {
         // 3) 最后 resize 截断：避免 move 开销
         // ------------------------------------------------------------------
 
-        // 快速路径：ref_gap_pos 为空，不做任何操作
+        // Fast-path：gap 标记为空时无需处理（避免一次无意义遍历）
         if (ref_gap_pos.empty()) {
             return;
         }
@@ -1332,10 +1346,10 @@ namespace align {
 
         for (std::size_t read_pos = 0; read_pos < n; ++read_pos) {
             if (!ref_gap_pos[read_pos]) {
-                // 保留该列：直接覆盖写入
+                // 保留该列：写指针前移
                 seq[write_pos++] = seq[read_pos];
             }
-            // gap 列：跳过（read_pos 递增但 write_pos 不变）
+            // gap 列：跳过（只移动读指针，不移动写指针）
         }
 
         // 截断多余部分（避免 move，直接 resize）
